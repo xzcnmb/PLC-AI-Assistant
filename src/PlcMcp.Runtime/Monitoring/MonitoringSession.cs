@@ -14,6 +14,7 @@ public sealed class MonitoringSession : IMonitoringSession
     private readonly TimeProvider _timeProvider;
     private readonly CancellationTokenSource _cts;
     private readonly TaskCompletionSource _completionTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Task _executionTask;
 
     private readonly Dictionary<string, TagValue> _lastValues = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastChangedTimes = new(StringComparer.OrdinalIgnoreCase);
@@ -51,7 +52,7 @@ public sealed class MonitoringSession : IMonitoringSession
         _startedAt = _timeProvider.GetUtcNow();
 
         // Start bounded execution
-        _ = Task.Run(RunLoopAsync);
+        _executionTask = Task.Run(RunLoopAsync);
     }
 
     public string SessionId => _sessionId;
@@ -237,6 +238,33 @@ public sealed class MonitoringSession : IMonitoringSession
         _disposed = true;
 
         Stop();
+        try
+        {
+            _cts.Dispose();
+        }
+        catch
+        {
+            // Ignore disposal errors
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        Stop();
+        try
+        {
+            // Best-effort wait for completion before disposing CTS
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await _completionTcs.Task.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Timeout or cancellation during shutdown wait is non-fatal
+        }
+
         try
         {
             _cts.Dispose();

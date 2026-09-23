@@ -356,7 +356,7 @@ public class MonitoringTests
     }
 
     [Fact]
-    public async Task SampleWindow_HonorsCancellationToken()
+    public async Task SampleWindow_HonorsCancellation_TerminatesEarly()
     {
         var timeProvider = new TestAutoTimeProvider();
         using var cts = new CancellationTokenSource();
@@ -399,7 +399,7 @@ public class MonitoringTests
             Family: "S7-1200",
             Model: "CPU 1214C",
             Firmware: "V4.4",
-            Endpoint: new EndpointProfile("192.168.1.10", 102, TransportKind.S7Comm),
+            Endpoint: new EndpointProfile("[IP]", 102, TransportKind.S7Comm),
             RuntimeProtocols: [TransportKind.S7Comm],
             EngineeringBackend: null,
             Capabilities: new CapabilitySet([]),
@@ -625,6 +625,190 @@ public class MonitoringTests
             TargetId = "t1",
             Tags = ["tag"]
         }));
+    }
+
+    [Fact]
+    public void StartSession_EnforcesPerTargetQuota_NegativeTest()
+    {
+        var service = new MonitoringService(
+            readDelegate: (_, _, _) => Task.FromResult<IReadOnlyList<TagValue>>([]),
+            maxActiveSessionsPerTarget: 2);
+
+        var req1 = new MonitoringRequest { TargetId = "target-A", Tags = ["Tag1"] };
+        var req2 = new MonitoringRequest { TargetId = "target-A", Tags = ["Tag2"] };
+        var req3 = new MonitoringRequest { TargetId = "target-A", Tags = ["Tag3"] };
+
+        var s1 = service.StartSession(req1);
+        var s2 = service.StartSession(req2);
+        Assert.NotNull(s1);
+        Assert.NotNull(s2);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => service.StartSession(req3));
+        Assert.Contains("target 'target-A' reached", ex.Message);
+
+        // Different target should still succeed
+        var reqB = new MonitoringRequest { TargetId = "target-B", Tags = ["Tag1"] };
+        var sB = service.StartSession(reqB);
+        Assert.NotNull(sB);
+    }
+
+    [Fact]
+    public void StartSession_EnforcesGlobalQuota_NegativeTest()
+    {
+        var service = new MonitoringService(
+            readDelegate: (_, _, _) => Task.FromResult<IReadOnlyList<TagValue>>([]),
+            maxActiveSessionsPerTarget: 10,
+            maxActiveSessionsGlobal: 3);
+
+        service.StartSession(new MonitoringRequest { TargetId = "t1", Tags = ["Tag1"] });
+        service.StartSession(new MonitoringRequest { TargetId = "t2", Tags = ["Tag1"] });
+        service.StartSession(new MonitoringRequest { TargetId = "t3", Tags = ["Tag1"] });
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            service.StartSession(new MonitoringRequest { TargetId = "t4", Tags = ["Tag1"] }));
+        Assert.Contains("Global active monitoring session limit reached", ex.Message);
+    }
+
+    [Fact]
+    public async Task StartSession_ReusesQuota_AfterActiveSessionCompletesOrCancels()
+    {
+        var service = new MonitoringService(
+            readDelegate: (_, _, _) => Task.FromResult<IReadOnlyList<TagValue>>([]),
+            maxActiveSessionsPerTarget: 1);
+
+        var s1 = service.StartSession(new MonitoringRequest { TargetId = "t1", Tags = ["Tag1"] });
+        Assert.Throws<InvalidOperationException>(() =>
+            service.StartSession(new MonitoringRequest { TargetId = "t1", Tags = ["Tag2"] }));
+
+        // Stop session s1 so its status transitions to Cancelled (terminal)
+        service.StopSession(s1.SessionId);
+        await s1.Completion;
+        Assert.Equal(MonitoringStatus.Cancelled, s1.Status);
+
+        // Now target quota allows a new session
+        var s2 = service.StartSession(new MonitoringRequest { TargetId = "t1", Tags = ["Tag2"] });
+        Assert.NotNull(s2);
+    }
+
+    [Fact]
+    public async Task TerminalSessions_RetainedTemporarilyForQuery_AndCleanedUpAfterExpiry()
+    {
+        var timeProvider = new TestAutoTimeProvider();
+        var retention = TimeSpan.FromSeconds(30);
+
+        var service = new MonitoringService(
+            readDelegate: (_, _, _) => Task.FromResult<IReadOnlyList<TagValue>>([
+                new TagValue("V", 1, PlcDataType.Int32, null, QualityCode.Good, timeProvider.GetUtcNow())
+            ]),
+            timeProvider: timeProvider,
+            terminalRetentionPeriod: retention);
+
+        var session = service.StartSession(new MonitoringRequest
+        {
+            TargetId = "t1",
+            Tags = ["V"],
+            Interval = TimeSpan.FromMilliseconds(50),
+            MaxSamples = 1,
+            Duration = TimeSpan.FromSeconds(1)
+        });
+
+        // Wait for session to complete
+        await session.Completion;
+        Assert.Equal(MonitoringStatus.Completed, session.Status);
+
+        // Right after completion, session is in terminal state but still queryable
+        Assert.NotNull(service.GetSession(session.SessionId));
+        Assert.Contains(service.ListSessions(), s => s.SessionId == session.SessionId);
+
+        // Fast forward time past retention period
+        using (timeProvider.CreateTimer(_ => { }, null, TimeSpan.FromSeconds(35), Timeout.InfiniteTimeSpan))
+        {
+        }
+
+        // Querying or calling CleanupTerminalSessions removes expired terminal session
+        var removed = service.CleanupTerminalSessions();
+        Assert.Equal(1, removed);
+        Assert.Null(service.GetSession(session.SessionId));
+        Assert.DoesNotContain(service.ListSessions(), s => s.SessionId == session.SessionId);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_WaitsForRunningSessionCompletion_Gracefully()
+    {
+        var runStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runCleanedUp = false;
+
+        var service = new MonitoringService(
+            readDelegate: async (_, _, ct) =>
+            {
+                runStarted.TrySetResult();
+                try
+                {
+                    await Task.Delay(100, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    runCleanedUp = true;
+                }
+                return [new TagValue("V", 1, PlcDataType.Int32, null, QualityCode.Good, DateTimeOffset.UtcNow)];
+            },
+            timeProvider: TimeProvider.System);
+
+        var session = service.StartSession(new MonitoringRequest
+        {
+            TargetId = "t1",
+            Tags = ["V"],
+            Interval = TimeSpan.FromMilliseconds(50),
+            MaxSamples = 100,
+            Duration = TimeSpan.FromSeconds(10)
+        });
+
+        await runStarted.Task;
+
+        // DisposeAsync should stop session and await completion
+        await service.DisposeAsync();
+
+        Assert.True(runCleanedUp);
+        Assert.Equal(MonitoringStatus.Cancelled, session.Status);
+        Assert.Empty(service.ListSessions());
+    }
+
+    [Fact]
+    public async Task ConcurrentStartSession_UnderQuotaContention_MaintainsStrictLimit()
+    {
+        var quota = 2;
+        var service = new MonitoringService(
+            readDelegate: (_, _, _) => Task.FromResult<IReadOnlyList<TagValue>>([]),
+            maxActiveSessionsPerTarget: quota);
+
+        var started = new List<IMonitoringSession>();
+        var rejectedCount = 0;
+        var lockObj = new object();
+
+        var tasks = Enumerable.Range(0, 10).Select(i => Task.Run(() =>
+        {
+            try
+            {
+                var s = service.StartSession(new MonitoringRequest
+                {
+                    TargetId = "target-heavy",
+                    Tags = [$"Tag{i}"]
+                });
+                lock (lockObj)
+                {
+                    started.Add(s);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                Interlocked.Increment(ref rejectedCount);
+            }
+        })).ToArray();
+
+        await Task.WhenAll(tasks);
+
+        Assert.Equal(quota, started.Count);
+        Assert.Equal(8, rejectedCount);
     }
 
     private sealed class FakePlcRuntimeClient : IPlcRuntimeClient

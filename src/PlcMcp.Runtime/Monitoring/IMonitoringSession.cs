@@ -2,7 +2,7 @@ using PlcMcp.Contracts.Models;
 
 namespace PlcMcp.Runtime.Monitoring;
 
-public interface IMonitoringSession : IDisposable
+public interface IMonitoringSession : IDisposable, IAsyncDisposable
 {
     string SessionId { get; }
 

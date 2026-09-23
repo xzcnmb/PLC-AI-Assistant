@@ -7,6 +7,10 @@ namespace PlcMcp.Runtime.Monitoring;
 
 public sealed class MonitoringService : IMonitoringService
 {
+    public const int DefaultMaxActiveSessionsPerTarget = 2;
+    public const int DefaultMaxActiveSessionsGlobal = 32;
+    public static readonly TimeSpan DefaultTerminalRetentionPeriod = TimeSpan.FromMinutes(5);
+
     private readonly Func<string, IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<TagValue>>> _readDelegate;
     private readonly Func<string, IReadOnlyList<TagDefinition>>? _tagResolver;
     private readonly MonitoringOptions _options;
@@ -14,19 +18,29 @@ public sealed class MonitoringService : IMonitoringService
     private readonly PerTargetThrottler _throttler;
     private readonly ConcurrentDictionary<string, MonitoringSession> _sessions = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _serviceCts = new();
+    private readonly object _sessionLock = new();
+    private readonly int _maxActiveSessionsPerTarget;
+    private readonly int _maxActiveSessionsGlobal;
+    private readonly TimeSpan _terminalRetentionPeriod;
     private bool _disposed;
 
     public MonitoringService(
         Func<string, IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<TagValue>>> readDelegate,
         Func<string, IReadOnlyList<TagDefinition>>? tagResolver = null,
         MonitoringOptions? options = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        int maxActiveSessionsPerTarget = DefaultMaxActiveSessionsPerTarget,
+        int maxActiveSessionsGlobal = DefaultMaxActiveSessionsGlobal,
+        TimeSpan? terminalRetentionPeriod = null)
     {
         _readDelegate = readDelegate ?? throw new ArgumentNullException(nameof(readDelegate));
         _tagResolver = tagResolver;
         _options = options ?? new MonitoringOptions();
         _timeProvider = timeProvider ?? TimeProvider.System;
         _throttler = new PerTargetThrottler(_options.PerTargetMinInterval, _timeProvider);
+        _maxActiveSessionsPerTarget = maxActiveSessionsPerTarget > 0 ? maxActiveSessionsPerTarget : DefaultMaxActiveSessionsPerTarget;
+        _maxActiveSessionsGlobal = maxActiveSessionsGlobal > 0 ? maxActiveSessionsGlobal : DefaultMaxActiveSessionsGlobal;
+        _terminalRetentionPeriod = terminalRetentionPeriod ?? DefaultTerminalRetentionPeriod;
     }
 
     public MonitoringService(
@@ -200,29 +214,61 @@ public sealed class MonitoringService : IMonitoringService
         var sessionId = $"mon-{Guid.NewGuid():N}";
         var canonicalTags = ResolveCanonicalTags(request.TargetId, request.Tags);
 
-        var session = new MonitoringSession(
-            sessionId: sessionId,
-            request: request,
-            canonicalTags: canonicalTags,
-            options: _options,
-            readDelegate: _readDelegate,
-            throttler: _throttler,
-            timeProvider: _timeProvider,
-            parentToken: _serviceCts.Token);
+        MonitoringSession session;
 
-        _sessions[sessionId] = session;
+        lock (_sessionLock)
+        {
+            CleanupExpiredTerminalSessionsLocked();
+
+            var activeGlobal = _sessions.Values.Count(s => s.Status == MonitoringStatus.Active);
+            if (activeGlobal >= _maxActiveSessionsGlobal)
+            {
+                throw new InvalidOperationException(
+                    $"Global active monitoring session limit reached ({_maxActiveSessionsGlobal}).");
+            }
+
+            var activeTarget = _sessions.Values.Count(s =>
+                s.Status == MonitoringStatus.Active &&
+                string.Equals(s.Info.TargetId, request.TargetId, StringComparison.OrdinalIgnoreCase));
+            if (activeTarget >= _maxActiveSessionsPerTarget)
+            {
+                throw new InvalidOperationException(
+                    $"Active monitoring session limit for target '{request.TargetId}' reached ({_maxActiveSessionsPerTarget}).");
+            }
+
+            session = new MonitoringSession(
+                sessionId: sessionId,
+                request: request,
+                canonicalTags: canonicalTags,
+                options: _options,
+                readDelegate: _readDelegate,
+                throttler: _throttler,
+                timeProvider: _timeProvider,
+                parentToken: _serviceCts.Token);
+
+            _sessions[sessionId] = session;
+        }
+
         return session;
     }
 
     public IMonitoringSession? GetSession(string sessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
-        return _sessions.TryGetValue(sessionId, out var session) ? session : null;
+        lock (_sessionLock)
+        {
+            CleanupExpiredTerminalSessionsLocked();
+            return _sessions.TryGetValue(sessionId, out var session) ? session : null;
+        }
     }
 
     public IReadOnlyList<MonitoringSessionInfo> ListSessions()
     {
-        return _sessions.Values.Select(s => s.Info).ToArray();
+        lock (_sessionLock)
+        {
+            CleanupExpiredTerminalSessionsLocked();
+            return _sessions.Values.Select(s => s.Info).ToArray();
+        }
     }
 
     public bool StopSession(string sessionId)
@@ -235,6 +281,39 @@ public sealed class MonitoringService : IMonitoringService
         }
 
         return false;
+    }
+
+    public int CleanupTerminalSessions()
+    {
+        lock (_sessionLock)
+        {
+            return CleanupExpiredTerminalSessionsLocked();
+        }
+    }
+
+    private int CleanupExpiredTerminalSessionsLocked()
+    {
+        var now = _timeProvider.GetUtcNow();
+        var removedCount = 0;
+
+        foreach (var pair in _sessions)
+        {
+            var session = pair.Value;
+            if (session.Status != MonitoringStatus.Active)
+            {
+                var completedAt = session.Info.CompletedAt ?? now;
+                if ((now - completedAt) >= _terminalRetentionPeriod)
+                {
+                    if (_sessions.TryRemove(pair.Key, out var removedSession))
+                    {
+                        removedSession.Dispose();
+                        removedCount++;
+                    }
+                }
+            }
+        }
+
+        return removedCount;
     }
 
     public IReadOnlyList<string> ResolveCanonicalTags(string targetId, IReadOnlyList<string> requestedTags)
@@ -418,7 +497,54 @@ public sealed class MonitoringService : IMonitoringService
 
     public async ValueTask DisposeAsync()
     {
-        Dispose();
-        await Task.CompletedTask.ConfigureAwait(false);
+        if (_disposed) return;
+        _disposed = true;
+
+        try
+        {
+            _serviceCts.Cancel();
+        }
+        catch
+        {
+            // Ignore
+        }
+
+        // Best-effort wait for all session completions before destroying CTS
+        var activeSessions = _sessions.Values.ToArray();
+        foreach (var session in activeSessions)
+        {
+            session.Stop();
+        }
+
+        if (activeSessions.Length > 0)
+        {
+            try
+            {
+                var completionTasks = activeSessions.Select(s => s.Completion);
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await Task.WhenAll(completionTasks).WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best effort wait; ignore timeout or cancellation during shutdown
+            }
+        }
+
+        foreach (var session in activeSessions)
+        {
+            await session.DisposeAsync().ConfigureAwait(false);
+        }
+        _sessions.Clear();
+
+        _throttler.Dispose();
+
+        try
+        {
+            _serviceCts.Dispose();
+        }
+        catch
+        {
+            // Ignore
+        }
     }
 }
