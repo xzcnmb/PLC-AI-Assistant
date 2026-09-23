@@ -5,6 +5,7 @@
     <ProjectReference Include="..\PlcMcp.Core\PlcMcp.Core.csproj" />
     <ProjectReference Include="..\PlcMcp.Runtime\PlcMcp.Runtime.csproj" />
     <ProjectReference Include="..\PlcMcp.Adapters\PlcMcp.Adapters.csproj" />
+    <ProjectReference Include="..\PlcMcp.Engineering\PlcMcp.Engineering.csproj" />
   </ItemGroup>
 
   <ItemGroup>

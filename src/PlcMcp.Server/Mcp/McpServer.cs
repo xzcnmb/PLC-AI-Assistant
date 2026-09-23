@@ -188,57 +188,6 @@ public sealed class McpServer
         }
     }
 
-    private async Task HandleToolsCallNotificationAsync(JsonRpcRequest request, TextWriter errorLog, CancellationToken cancellationToken)
-    {
-        if (request.Params.ValueKind != JsonValueKind.Object)
-        {
-            await errorLog.WriteLineAsync("[WARN] Notification 'tools/call' rejected: parameters must be an object.").ConfigureAwait(false);
-            return;
-        }
-
-        if (!request.Params.TryGetProperty("name", out var nameProp) || nameProp.ValueKind != JsonValueKind.String)
-        {
-            await errorLog.WriteLineAsync("[WARN] Notification 'tools/call' rejected: missing or invalid 'name' property.").ConfigureAwait(false);
-            return;
-        }
-
-        string toolName = nameProp.GetString()!;
-        JsonElement args = default;
-        if (request.Params.TryGetProperty("arguments", out var argumentsProp))
-        {
-            if (argumentsProp.ValueKind != JsonValueKind.Object)
-            {
-                await errorLog.WriteLineAsync("[WARN] Notification 'tools/call' rejected: 'arguments' must be an object.").ConfigureAwait(false);
-                return;
-            }
-            args = argumentsProp;
-        }
-        else if (request.Params.TryGetProperty("args", out var argsProp))
-        {
-            if (argsProp.ValueKind != JsonValueKind.Object)
-            {
-                await errorLog.WriteLineAsync("[WARN] Notification 'tools/call' rejected: 'args' must be an object.").ConfigureAwait(false);
-                return;
-            }
-            args = argsProp;
-        }
-        else
-        {
-            args = request.Params;
-        }
-
-        await errorLog.WriteLineAsync($"[INFO] Executing tool '{toolName}' via notification...").ConfigureAwait(false);
-        try
-        {
-            await _router.CallToolAsync(toolName, args, cancellationToken).ConfigureAwait(false);
-            await errorLog.WriteLineAsync($"[INFO] Tool '{toolName}' notification execution completed.").ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            await errorLog.WriteLineAsync($"[ERROR] Error executing tool '{toolName}' via notification: {ex.Message}").ConfigureAwait(false);
-        }
-    }
-
     private static async Task HandleInitializeAsync(JsonRpcRequest request, TextWriter output)
     {
         var result = new

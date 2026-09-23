@@ -4,6 +4,9 @@ using PlcMcp.Adapters;
 using PlcMcp.Contracts.Models;
 using PlcMcp.Core.Catalog;
 using PlcMcp.Runtime;
+using PlcMcp.Server.Governance;
+using PlcMcp.Engineering.Jobs;
+using PlcMcp.Engineering.Models;
 
 namespace PlcMcp.Server.Mcp;
 
@@ -11,30 +14,26 @@ public sealed class McpToolRouter
 {
     private readonly PlcRuntimeHost _host;
     private readonly PlcRuntimeService _service;
+    private readonly ServerGovernanceServices _governance;
     private readonly Dictionary<string, Func<JsonElement, CancellationToken, Task<object>>> _handlers;
     private readonly List<ToolDescriptor> _descriptors;
 
-    private static readonly HashSet<string> ProhibitedTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "plc_compile",
-        "plc_compile_project",
-        "plc_download",
-        "plc_download_project",
-        "plc_set_run_mode",
-        "plc_force_io",
-        "plc_ui_action",
-        "compile",
-        "download"
-    };
-
-    public McpToolRouter(PlcRuntimeHost host)
+    public McpToolRouter(PlcRuntimeHost host, ServerGovernanceServices? governance = null)
     {
         _host = host;
         _service = host.Service;
+        _governance = governance ?? new ServerGovernanceServices(Path.Combine(AppContext.BaseDirectory, "data"));
         _handlers = new(StringComparer.OrdinalIgnoreCase);
         _descriptors = new();
 
         RegisterTools();
+        if (_governance.SmartWorker is not null)
+        {
+            Register("plc_smart_inspect", "Inspects a Siemens SMART V2 project offline from a protected working copy.", true, false,
+                new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } }, HandleSmartInspectAsync);
+            Register("plc_smart_validate", "Validates specified SMART POU networks using a separate local MicroWIN instance; no PLC connection.", true, false,
+                new { type = "object", properties = new { projectPath = new { type = "string" }, blockNames = new { type = "array", items = new { type = "string" } } }, required = new[] { "projectPath", "blockNames" } }, HandleSmartValidateAsync);
+        }
         if (!_service.ListTargets().Any(t => t.IsSimulation))
         {
             _descriptors.RemoveAll(t => t.Name is "plc_plan_write" or "plc_apply_write");
@@ -47,12 +46,6 @@ public sealed class McpToolRouter
 
     public async Task<object> CallToolAsync(string name, JsonElement args, CancellationToken cancellationToken)
     {
-        if (ProhibitedTools.Contains(name))
-        {
-            string message = $"Tool '{name}' has no installed implementation. Engineering compilation/download and physical control are not provided by this build.";
-            return CreateToolCallResult(isError: true, new { error = message }, message);
-        }
-
         if (!_handlers.TryGetValue(name, out var handler))
         {
             string message = $"Unknown tool '{name}'.";
@@ -68,6 +61,8 @@ public sealed class McpToolRouter
                 string applyErr = failedApply.Error ?? "Apply write rejected or failed.";
                 return CreateToolCallResult(isError: true, failedApply, applyErr);
             }
+            if (rawResult is EngineeringExecutionResult { Success: false } failedEngineering)
+                return CreateToolCallResult(isError: true, failedEngineering, failedEngineering.Message);
 
             return CreateToolCallResult(isError: false, rawResult);
         }
@@ -285,6 +280,22 @@ public sealed class McpToolRouter
                 required = new[] { "targetId" }
             },
             handler: HandleBrowseSymbolsAsync);
+
+        Register("plc_doctor", "Runs read-only local vendor software and simulator detection.", true, false,
+            new { type = "object", properties = new { }, required = Array.Empty<string>() }, HandleDoctorAsync);
+        if (_governance.SmartWorker is not null)
+            Register("plc_project_inspect", "Inspects Siemens SMART V2 offline from a protected workcopy; V3 encrypted data is reported unsupported.", true, false,
+                new { type = "object", properties = new { projectPath = new { type = "string" }, vendor = new { type = "string" } }, required = new[] { "projectPath", "vendor" } }, HandleProjectInspectAsync);
+        Register("plc_lint_program", "Runs heuristic ST/SCL precheck; this is not vendor compiler validation.", true, false,
+            new { type = "object", properties = new { source = new { type = "string" }, filePath = new { type = "string" } }, required = Array.Empty<string>() }, HandleLintProgramAsync);
+        Register("plc_compare_projects", "Compares two supported PLCopen XML projects offline.", true, false,
+            new { type = "object", properties = new { leftPath = new { type = "string" }, rightPath = new { type = "string" } }, required = new[] { "leftPath", "rightPath" } }, HandleCompareProjectsAsync);
+        Register("plc_get_capabilities_report", "Returns capability evidence and local doctor status for a target.", true, false,
+            new { type = "object", properties = new { targetId = new { type = "string" } }, required = new[] { "targetId" } }, HandleCapabilityReportAsync);
+        Register("plc_get_job", "Returns a persisted engineering/deployment job and its state.", true, false,
+            new { type = "object", properties = new { jobId = new { type = "string" } }, required = new[] { "jobId" } }, HandleGetJobAsync);
+        Register("plc_get_audit", "Verifies and reads the append-only audit hash chain.", true, false,
+            new { type = "object", properties = new { verify = new { type = "boolean" } }, required = Array.Empty<string>() }, HandleGetAuditAsync);
     }
 
     private void Register(
@@ -381,8 +392,79 @@ public sealed class McpToolRouter
 
     private Task<object> HandleBrowseSymbolsAsync(JsonElement args, CancellationToken cancellationToken)
     {
-        // Delegates directly to ListTags on the service, identical to plc_list_tags
         return HandleListTagsAsync(args, cancellationToken);
+    }
+
+    private async Task<object> HandleSmartInspectAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var worker = _governance.SmartWorker ?? throw new NotSupportedException("SMART worker unavailable.");
+        var path = RequireString(args, "projectPath", "project_path");
+        var job = new EngineeringJobRequest(Guid.NewGuid().ToString("N"), EngineeringJobType.InspectProject, PlcVendor.Siemens, path);
+        return await worker.ExecuteAsync(job, cancellationToken);
+    }
+
+    private async Task<object> HandleSmartValidateAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var worker = _governance.SmartWorker ?? throw new NotSupportedException("SMART worker unavailable.");
+        var path = RequireString(args, "projectPath", "project_path");
+        var blocks = RequireStringList(args, "blockNames", "block_names");
+        var job = new EngineeringJobRequest(Guid.NewGuid().ToString("N"), EngineeringJobType.ValidatePou, PlcVendor.Siemens, path,
+            new Dictionary<string, string> { ["blockNames"] = string.Join(",", blocks) });
+        return await worker.ExecuteAsync(job, cancellationToken);
+    }
+
+    private Task<object> HandleDoctorAsync(JsonElement args, CancellationToken cancellationToken) =>
+        Task.FromResult<object>(_governance.Doctor.RunFullDiagnosis());
+
+    private Task<object> HandleCapabilityReportAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var target = _service.GetTarget(RequireString(args, "targetId", "target_id"));
+        return GetReportAsync(target, cancellationToken);
+
+        async Task<object> GetReportAsync(TargetProfile profile, CancellationToken token) =>
+            await _governance.GetCapabilityReportAsync(profile, token).ConfigureAwait(false);
+    }
+
+    private async Task<object> HandleProjectInspectAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var path = RequireString(args, "projectPath", "project_path");
+        var vendorText = RequireString(args, "vendor");
+        if (!Enum.TryParse<PlcVendor>(vendorText, true, out var vendor)) throw new ArgumentException("Unknown vendor.");
+        if (vendor != PlcVendor.Siemens || _governance.SmartWorker is null)
+            throw new NotSupportedException("No verified engineering worker is configured for this vendor. Set --smart-project-root to enable SMART offline inspect.");
+        var job = new EngineeringJobRequest(Guid.NewGuid().ToString("N"), EngineeringJobType.InspectProject, vendor, path);
+        return await _governance.SmartWorker.ExecuteAsync(job, cancellationToken).ConfigureAwait(false);
+    }
+
+    private Task<object> HandleLintProgramAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var source = TryGetString(args, "source");
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            var filePath = RequireString(args, "filePath", "file_path");
+            source = File.ReadAllText(filePath);
+        }
+        return Task.FromResult<object>(_governance.StAnalyzer.Analyze(source));
+    }
+
+    private Task<object> HandleCompareProjectsAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var left = _governance.Plcopen.ParseFile(RequireString(args, "leftPath", "left_path"));
+        var right = _governance.Plcopen.ParseFile(RequireString(args, "rightPath", "right_path"));
+        return Task.FromResult<object>(_governance.Plcopen.Compare(left, right));
+    }
+
+    private async Task<object> HandleGetJobAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var job = await _governance.Jobs.GetJobAsync(RequireString(args, "jobId", "job_id"), cancellationToken);
+        return job ?? throw new KeyNotFoundException("Job not found.");
+    }
+
+    private async Task<object> HandleGetAuditAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var result = await _governance.Audit.VerifyChainAsync(cancellationToken);
+        if (!result.IsValid) return new { verification = result, records = Array.Empty<AuditRecord>() };
+        return new { verification = result, records = await _governance.Audit.ReadAllAsync(cancellationToken) };
     }
 
     private async Task<object> HandleProbeTargetAsync(JsonElement args, CancellationToken cancellationToken)

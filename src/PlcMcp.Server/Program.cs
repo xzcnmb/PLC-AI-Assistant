@@ -1,6 +1,7 @@
 using System.Text;
 using PlcMcp.Adapters;
 using PlcMcp.Server.Mcp;
+using PlcMcp.Server.Governance;
 
 Console.InputEncoding = Encoding.UTF8;
 Console.OutputEncoding = Encoding.UTF8;
@@ -12,23 +13,38 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-if (args.Length > 0 && (args.Length != 2 || args[0] != "--config"))
+string? configPath = null;
+string? smartProjectRoot = null;
+for (var i = 0; i < args.Length; i += 2)
 {
-    Console.Error.WriteLine("Usage: PlcMcp.Server [--config <readonly-targets.json>]");
-    return 2;
+    if (i + 1 >= args.Length || args[i] is not ("--config" or "--smart-project-root"))
+    {
+        Console.Error.WriteLine("Usage: PlcMcp.Server [--config <readonly-targets.json>] [--smart-project-root <absolute-directory>]");
+        return 2;
+    }
+    if (args[i] == "--config" && configPath is null) configPath = args[i + 1];
+    else if (args[i] == "--smart-project-root" && smartProjectRoot is null) smartProjectRoot = args[i + 1];
+    else
+    {
+        Console.Error.WriteLine("Each option can be supplied only once.");
+        return 2;
+    }
 }
 
 PlcRuntimeHost host;
+ServerGovernanceServices governance;
 try
 {
-    host = args.Length == 0 ? DefaultPlcComposition.Create() : ConfiguredPlcComposition.Load(args[1]);
+    host = configPath is null ? DefaultPlcComposition.Create() : ConfiguredPlcComposition.Load(configPath);
+    governance = new ServerGovernanceServices(Path.Combine(AppContext.BaseDirectory, "data"), smartProjectRoot);
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"Configuration rejected: {ex.Message}");
     return 2;
 }
-var router = new McpToolRouter(host);
+await governance.Jobs.RecoverFromCrashAsync(cts.Token);
+var router = new McpToolRouter(host, governance);
 var server = new McpServer(router);
 
 try
