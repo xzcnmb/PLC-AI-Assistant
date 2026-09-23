@@ -95,10 +95,11 @@ public class AuditHardeningTests
             var log = new FileAuditLog(tempFile);
             await log.AppendAsync("event1", "target-1", "user-1", "act1", new { a = 1 });
             await log.AppendAsync("event2", "target-1", "user-1", "act2", new { a = 2 });
-            await log.AppendAsync("step3", "target-1", "user-1", "action3", new { a = 3 });
+            await log.AppendAsync("event3", "target-1", "user-1", "act3", new { a = 3 });
 
             // Corrupt line 2 in place (bad json content, but keep newline)
             var lines = await File.ReadAllLinesAsync(tempFile);
+            var originalLine2 = lines[1];
             lines[1] = "{\"CorruptedJsonData\":true"; // invalid JSON line
             await File.WriteAllLinesAsync(tempFile, lines);
 

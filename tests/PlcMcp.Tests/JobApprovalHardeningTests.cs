@@ -261,8 +261,8 @@ public class JobApprovalHardeningTests
 
         // Fake in-memory trusted IdP verification callback for test environment (no external network or real IdP called).
         // Validates fixed signed token, approver identity, expected issuer, and required claims.
-        const string expectedToken = "fake-fixed-idp-token-12345";
-        const string expectedApprover = "alice@corporate-idp.example.com";
+        const string expectedToken = "fake-okta-jwt-bearer-token-12345";
+        const string expectedApprover = "alice@example.com";
         const string expectedIssuer = "https://fake-idp.example.internal";
         const string expectedClaim = "role=plc_safety_engineer";
 
@@ -325,8 +325,8 @@ public class JobApprovalHardeningTests
         var publicKeyVerifier = new ECDsaPublicKeySignatureVerifier("ecdsa-p256-key", pubEcdsa);
 
         // Fake in-memory trusted IdP verification callback for test environment (no external network or real IdP called).
-        const string expectedToken = "fake-fixed-idp-token-12345";
-        const string expectedApprover = "bob@enterprise-idp.example.internal";
+        const string expectedToken = "fake-token-xyz-987";
+        const string expectedApprover = "bob@example.com";
         const string expectedIssuer = "https://fake-enterprise-idp.example.internal";
         const string expectedClaim = "role=plc_operator";
 
@@ -386,7 +386,7 @@ public class JobApprovalHardeningTests
         // Fake in-memory IdP callback for unit test
         var attestationValidator = new ExternalHumanAttestationValidator(
             "CorpIdP",
-            CreateFakeTrustedIdpCheck("token-valid", "engineer@corp.internal", "https://fake-idp.example.internal", "role=engineer"));
+            CreateFakeTrustedIdpCheck("token-valid", "alice@example.com", "https://fake-idp.example.internal", "role=engineer"));
         var verifier = new ApprovalBindingVerifier(publicKeyVerifier: publicKeyVerifier, attestationValidator: attestationValidator);
 
         var now = DateTimeOffset.UtcNow;
@@ -395,7 +395,7 @@ public class JobApprovalHardeningTests
             TargetId: "target-line-A",
             ActionKind: "DownloadProgram",
             ProjectHash: "project_hash_v1",
-            ApprovedBy: "engineer@corp.internal",
+            ApprovedBy: "alice@example.com",
             IssuedAt: now.AddMinutes(-1),
             ExpiresAt: now.AddMinutes(10),
             Signature: "",
@@ -432,7 +432,7 @@ public class JobApprovalHardeningTests
         Assert.Contains("signature verification failed", nonceMismatch.ErrorReason);
 
         // 3. Tampering ApprovedBy identity breaks canonical signature
-        var tamperedUserBinding = signedBinding with { ApprovedBy = "forged-engineer@corp.internal" };
+        var tamperedUserBinding = signedBinding with { ApprovedBy = "mallory@example.com" };
         var userMismatch = verifier.Verify(tamperedUserBinding, "target-line-A", "DownloadProgram", "project_hash_v1", now);
         Assert.False(userMismatch.IsValid);
         Assert.Contains("signature verification failed", userMismatch.ErrorReason);
@@ -506,8 +506,8 @@ public class JobApprovalHardeningTests
         using var pubRsa = CreatePublicOnlyRsa(rsa);
         var publicKeyVerifier = new RsaPublicKeySignatureVerifier("rsa-key-01", pubRsa);
 
-        const string expectedToken = "fake-fixed-idp-token-12345";
-        const string expectedApprover = "alice@corporate-idp.example.com";
+        const string expectedToken = "valid-okta-token";
+        const string expectedApprover = "authorized_engineer@example.com";
         const string expectedIssuer = "https://fake-idp.example.internal";
         const string expectedClaim = "role=engineer";
 
@@ -586,7 +586,7 @@ public class JobApprovalHardeningTests
             TargetId: "target-1",
             ActionKind: "DownloadProgram",
             ProjectHash: "hash1",
-            ApprovedBy: "alice@corporate-idp.example.com",
+            ApprovedBy: "alice@example.com",
             IssuedAt: DateTimeOffset.UtcNow.AddMinutes(-1),
             ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
             Signature: "sig",
@@ -613,7 +613,7 @@ public class JobApprovalHardeningTests
             TargetId: "target-1",
             ActionKind: "DownloadProgram",
             ProjectHash: "hash1",
-            ApprovedBy: "alice@corporate-idp.example.com",
+            ApprovedBy: "alice@example.com",
             IssuedAt: DateTimeOffset.UtcNow.AddMinutes(-1),
             ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
             Signature: "sig",
@@ -653,7 +653,7 @@ public class JobApprovalHardeningTests
             "CorporateIdP",
             CreateFakeTrustedIdpCheck(
                 expectedToken: "trusted-token",
-                expectedApprover: "alice@corporate-idp.example.com",
+                expectedApprover: "alice@example.com",
                 expectedIssuer: "https://fake-idp.example.internal",
                 expectedClaim: "role=senior_engineer"));
 
@@ -670,7 +670,7 @@ public class JobApprovalHardeningTests
             TargetId: "target-1",
             ActionKind: "DownloadProgram",
             ProjectHash: "hash1",
-            ApprovedBy: "alice@corporate-idp.example.com",
+            ApprovedBy: "alice@example.com",
             IssuedAt: DateTimeOffset.UtcNow.AddMinutes(-1),
             ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
             Signature: "sig",
@@ -687,7 +687,7 @@ public class JobApprovalHardeningTests
         Assert.Contains("token verification failed", reasonToken);
 
         // Approver mismatch fails
-        var wrongApprover = validBinding with { ApprovedBy = "intruder@evil.com" };
+        var wrongApprover = validBinding with { ApprovedBy = "mallory@example.com" };
         Assert.False(validator.ValidateAttestation(wrongApprover, out var reasonApprover));
         Assert.Contains("approver identity does not match", reasonApprover);
 
@@ -723,7 +723,7 @@ public class JobApprovalHardeningTests
             TargetId: "target-line-A",
             ActionKind: "DownloadProgram",
             ProjectHash: "project_hash_v1",
-            ApprovedBy: "alice@corporate-idp.example.com",
+            ApprovedBy: "alice@example.com",
             IssuedAt: now.AddMinutes(-1),
             ExpiresAt: now.AddMinutes(10),
             Signature: "",
@@ -771,7 +771,7 @@ public class JobApprovalHardeningTests
             TargetId: "target-1",
             ActionKind: "DownloadProgram",
             ProjectHash: "hash1",
-            ApprovedBy: "alice@corporate-idp.example.com",
+            ApprovedBy: "alice@example.com",
             IssuedAt: now.AddMinutes(-1),
             ExpiresAt: now.AddMinutes(10),
             Signature: "",
@@ -859,7 +859,7 @@ public class JobApprovalHardeningTests
     /// </summary>
     private static Func<ApprovalBinding, (bool IsValid, string? Reason)> CreateFakeTrustedIdpCheck(
         string expectedToken = "fake-fixed-idp-token-12345",
-        string expectedApprover = "alice@corporate-idp.example.com",
+        string expectedApprover = "alice@example.com",
         string expectedIssuer = "https://fake-idp.example.internal",
         string expectedClaim = "role=plc_safety_engineer")
     {

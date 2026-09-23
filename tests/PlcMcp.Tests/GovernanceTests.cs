@@ -46,7 +46,7 @@ public class GovernanceTests
         {
             var auditLog = new FileAuditLog(tempFile);
 
-            var r1 = await auditLog.AppendAsync("auth", "target-1", "user-alice", "login", new { ip = "192.168.0.10" });
+            var r1 = await auditLog.AppendAsync("auth", "target-1", "user-alice", "login", new { ip = "192.168.1.10" });
             var r2 = await auditLog.AppendAsync("job_start", "target-1", "user-alice", "download", new { hash = "abc123" });
             var r3 = await auditLog.AppendAsync("job_end", "target-1", "user-alice", "download", new { status = "succeeded" });
 
@@ -281,7 +281,7 @@ public class GovernanceTests
             TargetId: "plc-main",
             ActionKind: "DownloadProgram",
             ProjectHash: "sha256_proj_abc",
-            ApprovedBy: "alice@corporate-idp.example.com",
+            ApprovedBy: "[邮箱]",
             IssuedAt: now.AddMinutes(-1),
             ExpiresAt: now.AddMinutes(5),
             Signature: "some-signature",
@@ -308,7 +308,7 @@ public class GovernanceTests
             TargetId: "plc-target-A",
             ActionKind: "DownloadProgram",
             ProjectHash: "hash_project_v1",
-            ApprovedBy: "alice@corporate-idp.example.com",
+            ApprovedBy: "[邮箱]",
             IssuedAt: now.AddMinutes(-1),
             ExpiresAt: now.AddMinutes(10),
             Signature: "",
@@ -364,7 +364,7 @@ public class GovernanceTests
             TargetId: "plc-target-A",
             ActionKind: "DownloadProgram",
             ProjectHash: "hash_project_v1",
-            ApprovedBy: "alice@corporate-idp.example.com",
+            ApprovedBy: "alice@example.com",
             IssuedAt: now.AddMinutes(-1),
             ExpiresAt: now.AddMinutes(10),
             Signature: "",
@@ -397,7 +397,7 @@ public class GovernanceTests
             TargetId: "plc-target-A",
             ActionKind: "DownloadProgram",
             ProjectHash: "hash_project_v1",
-            ApprovedBy: "alice@corporate-idp.example.com",
+            ApprovedBy: "alice@example.com",
             IssuedAt: now.AddMinutes(-1),
             ExpiresAt: now.AddMinutes(10),
             Signature: "",
@@ -427,7 +427,7 @@ public class GovernanceTests
 
         // Fake in-memory test callback: validates fixed token, approver, issuer, claims without calling external services
         const string expectedToken = "test-token-okta-999";
-        const string expectedApprover = "alice@corporate-idp.example.com";
+        const string expectedApprover = "alice@example.com";
         const string expectedIssuer = "https://fake-idp.example.internal";
         const string expectedClaim = "role=safety_officer";
 

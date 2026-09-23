@@ -785,4 +785,210 @@ public class SiemensSmartEngineeringWorkerTests : IDisposable
         Assert.Equal(CapabilityStatus.Experimental, result.Status);
         Assert.Contains("JSON", result.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task Worker_ExecuteAsync_CatchesIOException_ReturnsGracefully()
+    {
+        var workspaceManager = new ProjectWorkspaceManager(_tempTestDir);
+        var doctor = new MockDoctor();
+        var bridge = new MockSmartBridge();
+        var config = new SiemensSmartBridgeConfig { AllowedWorkspaceRoots = new[] { _tempTestDir } };
+
+        bridge.OnExecute = (cmd, args) => throw new IOException("Disk failure during bridge execution.");
+
+        var worker = new SiemensSmartEngineeringWorker(workspaceManager, doctor, bridge, config);
+        var sampleFile = Path.Combine(_tempTestDir, "demo_ioerr.smart");
+        File.WriteAllBytes(sampleFile, [0x01, 0x02]);
+
+        var job = new EngineeringJobRequest(
+            JobId: "job-ioerr-01",
+            JobType: EngineeringJobType.InspectProject,
+            Vendor: PlcVendor.Siemens,
+            ProjectPath: sampleFile);
+
+        var result = await worker.ExecuteAsync(job);
+
+        Assert.False(result.Success);
+        Assert.Equal(CapabilityStatus.Experimental, result.Status);
+        Assert.Contains("I/O failure", result.Message);
+    }
+
+    [Fact]
+    public async Task Bridge_ExecuteCommandAsync_ThrowsWhenBackendUnavailable()
+    {
+        var config = new SiemensSmartBridgeConfig
+        {
+            PythonExecutablePath = @"C:\NonExistent\python.exe"
+        };
+        var bridge = new SiemensSmartBridge(config);
+
+        Assert.False(bridge.IsAvailable);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            bridge.ExecuteCommandAsync("probe", new Dictionary<string, string>(), TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task Bridge_FileLock_BlocksConcurrentExecution_AndReleasesCleanly()
+    {
+        // Test FileStream FileShare.None cross-process/cross-thread lock behavior
+        var lockFile = Path.Combine(_tempTestDir, "test_file_lock.lock");
+
+        // 1. Acquire lock stream
+        var stream1 = await SiemensSmartBridge.AcquireLockAsync(
+            TimeSpan.FromSeconds(2),
+            CancellationToken.None,
+            customLockFilePath: lockFile);
+
+        Assert.NotNull(stream1);
+
+        // 2. Second attempt within timeout must fail with TimeoutException because stream1 holds exclusive lock
+        await Assert.ThrowsAsync<TimeoutException>(async () =>
+        {
+            await SiemensSmartBridge.AcquireLockAsync(
+                TimeSpan.FromMilliseconds(150),
+                CancellationToken.None,
+                customLockFilePath: lockFile);
+        });
+
+        // 3. Dispose stream1 -> lock must be released immediately
+        await stream1.DisposeAsync();
+
+        // 4. Third attempt must now succeed promptly
+        var stream2 = await SiemensSmartBridge.AcquireLockAsync(
+            TimeSpan.FromSeconds(2),
+            CancellationToken.None,
+            customLockFilePath: lockFile);
+
+        Assert.NotNull(stream2);
+        await stream2.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Bridge_FileLock_HonorsCancellation_AndLeavesLockAvailable()
+    {
+        var lockFile = Path.Combine(_tempTestDir, "test_file_lock_cancel.lock");
+
+        // 1. Hold lock with stream1
+        var stream1 = await SiemensSmartBridge.AcquireLockAsync(
+            TimeSpan.FromSeconds(2),
+            CancellationToken.None,
+            customLockFilePath: lockFile);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        // 2. Waiting acquisition is cancelled
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await SiemensSmartBridge.AcquireLockAsync(
+                TimeSpan.FromSeconds(10),
+                cts.Token,
+                customLockFilePath: lockFile);
+        });
+
+        // 3. Release stream1
+        await stream1.DisposeAsync();
+
+        // 4. Lock is immediately acquirable again
+        var stream2 = await SiemensSmartBridge.AcquireLockAsync(
+            TimeSpan.FromSeconds(2),
+            CancellationToken.None,
+            customLockFilePath: lockFile);
+
+        Assert.NotNull(stream2);
+        await stream2.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Bridge_ConcurrentOverview_OnRealV2WorkingCopy_SucceedsAndRespectsLock()
+    {
+        string realSmartFile = @"D:\SMart200 MCP\work\_autoflow.smart";
+        if (!File.Exists(realSmartFile))
+            return; // Skip if environment sample file not available
+
+        var bridge1 = new SiemensSmartBridge();
+        if (!bridge1.IsAvailable)
+            return; // Skip if python runtime not available
+
+        var bridge2 = new SiemensSmartBridge();
+        Assert.True(bridge2.IsAvailable);
+
+        // Create working copies in temp directory so original is untouched
+        string copy1 = Path.Combine(_tempTestDir, "work_copy1.smart");
+        string copy2 = Path.Combine(_tempTestDir, "work_copy2.smart");
+        File.Copy(realSmartFile, copy1, overwrite: true);
+        File.Copy(realSmartFile, copy2, overwrite: true);
+
+        var args1 = new Dictionary<string, string> { ["path"] = copy1 };
+        var args2 = new Dictionary<string, string> { ["path"] = copy2 };
+
+        // Concurrently run overview on both bridge instances
+        var task1 = bridge1.ExecuteCommandAsync("overview", args1, TimeSpan.FromSeconds(30));
+        var task2 = bridge2.ExecuteCommandAsync("overview", args2, TimeSpan.FromSeconds(30));
+
+        await Task.WhenAll(task1, task2);
+
+        string res1Json = await task1;
+        string res2Json = await task2;
+
+        using var doc1 = JsonDocument.Parse(res1Json);
+        using var doc2 = JsonDocument.Parse(res2Json);
+
+        Assert.True(doc1.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal("V2", doc1.RootElement.GetProperty("format").GetString());
+        Assert.True(doc1.RootElement.GetProperty("symbol_count").GetInt32() > 0);
+        Assert.True(doc1.RootElement.GetProperty("pou_names").GetArrayLength() > 0);
+
+        Assert.True(doc2.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal("V2", doc2.RootElement.GetProperty("format").GetString());
+        Assert.True(doc2.RootElement.GetProperty("symbol_count").GetInt32() > 0);
+        Assert.True(doc2.RootElement.GetProperty("pou_names").GetArrayLength() > 0);
+
+        // Lock must be released and immediately acquirable again
+        var stream = await SiemensSmartBridge.AcquireLockAsync(TimeSpan.FromSeconds(5));
+        Assert.NotNull(stream);
+        await stream.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Bridge_ConcurrentOverview_WithCancellation_ReleasesLockPromptly()
+    {
+        string realSmartFile = @"D:\SMart200 MCP\work\_autoflow.smart";
+        if (!File.Exists(realSmartFile))
+            return;
+
+        var bridge1 = new SiemensSmartBridge();
+        if (!bridge1.IsAvailable)
+            return;
+
+        var bridge2 = new SiemensSmartBridge();
+
+        string copy1 = Path.Combine(_tempTestDir, "cancel_copy1.smart");
+        File.Copy(realSmartFile, copy1, overwrite: true);
+
+        // Acquire lock manually to force second caller to wait
+        var holdLockStream = await SiemensSmartBridge.AcquireLockAsync(TimeSpan.FromSeconds(5));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+        var args = new Dictionary<string, string> { ["path"] = copy1 };
+
+        // Second bridge call will wait for lock and get cancelled
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await bridge2.ExecuteCommandAsync("overview", args, TimeSpan.FromSeconds(30), cts.Token);
+        });
+
+        // Release the held lock
+        await holdLockStream.DisposeAsync();
+
+        // Third call should now succeed cleanly
+        string resJson = await bridge1.ExecuteCommandAsync("overview", args, TimeSpan.FromSeconds(30));
+        using var doc = JsonDocument.Parse(resJson);
+        Assert.True(doc.RootElement.GetProperty("success").GetBoolean());
+
+        // Lock is again free
+        var stream = await SiemensSmartBridge.AcquireLockAsync(TimeSpan.FromSeconds(5));
+        Assert.NotNull(stream);
+        await stream.DisposeAsync();
+    }
 }
