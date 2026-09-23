@@ -504,11 +504,10 @@ public class ExternalWorkerTests : IDisposable
 
         var result = await worker.ExecuteAsync(job);
 
-        Assert.True(result.Success);
-        Assert.Equal(CapabilityStatus.Supported, result.Status);
-        Assert.NotNull(result.ExportedOutputs);
-        Assert.True(result.ExportedOutputs.ContainsKey("PLC_PRG.st"));
-        Assert.Contains("64-bit", result.Details);
+        // Fake worker reporting completed with fictitious unverified artifact fails and never promoted to Supported
+        Assert.False(result.Success);
+        Assert.Equal(CapabilityStatus.Experimental, result.Status);
+        Assert.Contains("Artifact validation failed", result.Message);
     }
 
     [Fact]
@@ -827,6 +826,419 @@ for line in sys.stdin:
         Assert.False(result.Success);
         Assert.Equal(CapabilityStatus.Unsupported, result.Status);
         Assert.Contains("not installed or detected", result.Message);
+    }
+
+    [Fact]
+    public async Task ExternalEngineeringWorker_FakeWorker_ReturnsCompletedWithoutFiles_CompileProject_Fails()
+    {
+        string dummyProj = Path.Combine(_tempWorkspace, "demo.project");
+        File.WriteAllText(dummyProj, "TEST-PROJECT");
+
+        var mockDetector = new FakeInstalledDetector(PlcVendor.Generic, "CODESYS", "CODESYS V3");
+        var wsManager = new ProjectWorkspaceManager(_tempWorkspace);
+
+        var mockProc = new MockExternalProcess(input =>
+        {
+            using var doc = JsonDocument.Parse(input);
+            string id = doc.RootElement.GetProperty("id").GetString()!;
+            string method = doc.RootElement.GetProperty("method").GetString()!;
+
+            if (method == "handshake")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerHandshakeResponse("FakeWorker", "1.0", "1.0", "CODESYS", "64-bit", "Mock", new[] { "CompileProject" })
+                });
+            }
+            if (method == "submit")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerJobStatusResponse("job-compile", "completed", 1.0, "Worker says all good", 0)
+                });
+            }
+            if (method == "artifacts")
+            {
+                // Returns 0 artifacts
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerArtifactsResponse("job-compile", Array.Empty<WorkerArtifactDescriptor>())
+                });
+            }
+            return null;
+        });
+
+        var config = new ExternalEngineeringWorkerConfig
+        {
+            ExecutablePath = _dummyExePath,
+            AllowedExecutablePaths = new() { _dummyExePath },
+            AllowedWorkspaceRoots = new() { _tempWorkspace }
+        };
+
+        var worker = new ExternalEngineeringWorker(
+            PlcVendor.Generic,
+            "CodesysWorker",
+            config,
+            mockDetector,
+            wsManager,
+            new MockProcessRunner(mockProc));
+
+        var job = new EngineeringJobRequest(
+            JobId: "job-compile",
+            JobType: EngineeringJobType.CompileProject,
+            Vendor: PlcVendor.Generic,
+            ProjectPath: dummyProj);
+
+        var result = await worker.ExecuteAsync(job);
+
+        Assert.False(result.Success);
+        Assert.Equal(CapabilityStatus.Experimental, result.Status);
+        Assert.Contains("Compilation failed", result.Message);
+        Assert.Contains("0 artifacts", result.Details);
+    }
+
+    [Fact]
+    public async Task ExternalEngineeringWorker_InvalidArtifactPath_OrHashMismatch_Fails()
+    {
+        string dummyProj = Path.Combine(_tempWorkspace, "demo.project");
+        File.WriteAllText(dummyProj, "TEST-PROJECT");
+
+        var mockDetector = new FakeInstalledDetector(PlcVendor.Generic, "CODESYS", "CODESYS V3");
+        var wsManager = new ProjectWorkspaceManager(_tempWorkspace);
+
+        // Case A: Traversal path escapes working directory
+        var mockProcA = new MockExternalProcess(input =>
+        {
+            using var doc = JsonDocument.Parse(input);
+            string id = doc.RootElement.GetProperty("id").GetString()!;
+            string method = doc.RootElement.GetProperty("method").GetString()!;
+
+            if (method == "handshake")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerHandshakeResponse("WorkerA", "1.0", "1.0", "CODESYS", "64-bit", "Mock", new[] { "InspectProject" })
+                });
+            }
+            if (method == "submit")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerJobStatusResponse("job-esc", "completed", 1.0, "OK", 0)
+                });
+            }
+            if (method == "artifacts")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerArtifactsResponse("job-esc", new[]
+                    {
+                        new WorkerArtifactDescriptor("evil", "../../outside.txt", "TXT", 10, "dummy")
+                    })
+                });
+            }
+            return null;
+        });
+
+        var configA = new ExternalEngineeringWorkerConfig
+        {
+            ExecutablePath = _dummyExePath,
+            AllowedExecutablePaths = new() { _dummyExePath },
+            AllowedWorkspaceRoots = new() { _tempWorkspace }
+        };
+
+        var workerA = new ExternalEngineeringWorker(
+            PlcVendor.Generic,
+            "WorkerA",
+            configA,
+            mockDetector,
+            wsManager,
+            new MockProcessRunner(mockProcA));
+
+        var jobA = new EngineeringJobRequest(
+            JobId: "job-esc",
+            JobType: EngineeringJobType.InspectProject,
+            Vendor: PlcVendor.Generic,
+            ProjectPath: dummyProj);
+
+        var resultA = await workerA.ExecuteAsync(jobA);
+        Assert.False(resultA.Success);
+        Assert.Equal(CapabilityStatus.Experimental, resultA.Status);
+        Assert.Contains("escapes constrained working directory", resultA.Message);
+
+        // Case B: File exists but SHA256 mismatch
+        var mockProcB = new MockExternalProcess(input =>
+        {
+            using var doc = JsonDocument.Parse(input);
+            string id = doc.RootElement.GetProperty("id").GetString()!;
+            string method = doc.RootElement.GetProperty("method").GetString()!;
+
+            if (method == "handshake")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerHandshakeResponse("WorkerB", "1.0", "1.0", "CODESYS", "64-bit", "Mock", new[] { "InspectProject" })
+                });
+            }
+            if (method == "submit")
+            {
+                string lastSubmittedWorkPath = doc.RootElement.GetProperty("params").GetProperty("projectPath").GetString()!;
+                string workDir = Path.GetDirectoryName(lastSubmittedWorkPath)!;
+                string artifactDir = Path.Combine(workDir, "export");
+                Directory.CreateDirectory(artifactDir);
+                File.WriteAllText(Path.Combine(artifactDir, "out.st"), "REAL-ARTIFACT-CONTENT");
+
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerJobStatusResponse("job-hash", "completed", 1.0, "OK", 0)
+                });
+            }
+            if (method == "artifacts")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerArtifactsResponse("job-hash", new[]
+                    {
+                        new WorkerArtifactDescriptor("out.st", "export/out.st", "ST", 21, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+                    })
+                });
+            }
+            return null;
+        });
+
+        var configB = new ExternalEngineeringWorkerConfig
+        {
+            ExecutablePath = _dummyExePath,
+            AllowedExecutablePaths = new() { _dummyExePath },
+            AllowedWorkspaceRoots = new() { _tempWorkspace }
+        };
+
+        var workerB = new ExternalEngineeringWorker(
+            PlcVendor.Generic,
+            "WorkerB",
+            configB,
+            mockDetector,
+            wsManager,
+            new MockProcessRunner(mockProcB));
+
+        var resultB = await workerB.ExecuteAsync(jobA);
+        Assert.False(resultB.Success);
+        Assert.Equal(CapabilityStatus.Experimental, resultB.Status);
+        Assert.Contains("integrity check failed", resultB.Message);
+    }
+
+    [Fact]
+    public async Task ExternalEngineeringWorker_LegitimateArtifact_ReturnsExperimentalOnly_NeverSupported()
+    {
+        string dummyProj = Path.Combine(_tempWorkspace, "demo.project");
+        File.WriteAllText(dummyProj, "TEST-PROJECT");
+
+        var mockDetector = new FakeInstalledDetector(PlcVendor.Generic, "CODESYS", "CODESYS V3");
+        var wsManager = new ProjectWorkspaceManager(_tempWorkspace);
+
+        byte[] realContent = Encoding.UTF8.GetBytes("PROGRAM Main\nVAR\nEND_VAR\nEND_PROGRAM");
+        string realSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(realContent)).ToLowerInvariant();
+
+        var mockProc = new MockExternalProcess(input =>
+        {
+            using var doc = JsonDocument.Parse(input);
+            string id = doc.RootElement.GetProperty("id").GetString()!;
+            string method = doc.RootElement.GetProperty("method").GetString()!;
+
+            if (method == "handshake")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerHandshakeResponse("LegitWorker", "1.2.3", "1.0", "CODESYS", "64-bit", "Mock", new[] { "InspectProject" })
+                });
+            }
+            if (method == "submit")
+            {
+                string workPath = doc.RootElement.GetProperty("params").GetProperty("projectPath").GetString()!;
+                string workDir = Path.GetDirectoryName(workPath)!;
+                string exportDir = Path.Combine(workDir, "artifacts");
+                Directory.CreateDirectory(exportDir);
+                File.WriteAllBytes(Path.Combine(exportDir, "Main.st"), realContent);
+
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerJobStatusResponse("job-legit", "completed", 1.0, "OK", 0)
+                });
+            }
+            if (method == "artifacts")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerArtifactsResponse("job-legit", new[]
+                    {
+                        new WorkerArtifactDescriptor("Main.st", "artifacts/Main.st", "ST", realContent.Length, realSha)
+                    })
+                });
+            }
+            return null;
+        });
+
+        var config = new ExternalEngineeringWorkerConfig
+        {
+            ExecutablePath = _dummyExePath,
+            AllowedExecutablePaths = new() { _dummyExePath },
+            AllowedWorkspaceRoots = new() { _tempWorkspace },
+            ExpectedWorkerName = "LegitWorker",
+            ExpectedWorkerVersion = "1.2.3",
+            ExpectedProtocolVersion = "1.0",
+            RequirePinnedIdentity = true
+        };
+
+        var worker = new ExternalEngineeringWorker(
+            PlcVendor.Generic,
+            "LegitWorker",
+            config,
+            mockDetector,
+            wsManager,
+            new MockProcessRunner(mockProc));
+
+        var job = new EngineeringJobRequest(
+            JobId: "job-legit",
+            JobType: EngineeringJobType.InspectProject,
+            Vendor: PlcVendor.Generic,
+            ProjectPath: dummyProj);
+
+        var result = await worker.ExecuteAsync(job);
+
+        Assert.True(result.Success);
+        // CRITICAL SECURITY ASSERTION: Self-reported completion must NEVER be promoted to Supported!
+        Assert.Equal(CapabilityStatus.Experimental, result.Status);
+        Assert.NotEqual(CapabilityStatus.Supported, result.Status);
+        Assert.NotNull(result.ExportedOutputs);
+        Assert.True(result.ExportedOutputs.ContainsKey("Main.st"));
+        Assert.True(File.Exists(result.ExportedOutputs["Main.st"]));
+        Assert.Contains("TrustLevel=Experimental", result.Details);
+    }
+
+    [Fact]
+    public async Task ExternalEngineeringWorker_IdentityPinning_MismatchedOrUnpinned_FailsClosed()
+    {
+        string dummyProj = Path.Combine(_tempWorkspace, "demo.project");
+        File.WriteAllText(dummyProj, "TEST-PROJECT");
+
+        var mockDetector = new FakeInstalledDetector(PlcVendor.Generic, "CODESYS", "CODESYS V3");
+        var wsManager = new ProjectWorkspaceManager(_tempWorkspace);
+
+        Func<MockExternalProcess> createProc = () => new MockExternalProcess(input =>
+        {
+            using var doc = JsonDocument.Parse(input);
+            string id = doc.RootElement.GetProperty("id").GetString()!;
+            string method = doc.RootElement.GetProperty("method").GetString()!;
+
+            if (method == "handshake")
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = id,
+                    result = new WorkerHandshakeResponse("RogueWorker", "9.9.9", "1.0", "CODESYS", "64-bit", "Mock", new[] { "InspectProject" })
+                });
+            }
+            return null;
+        });
+
+        // 1. Mismatched worker name fails closed
+        var configMismatch = new ExternalEngineeringWorkerConfig
+        {
+            ExecutablePath = _dummyExePath,
+            AllowedExecutablePaths = new() { _dummyExePath },
+            AllowedWorkspaceRoots = new() { _tempWorkspace },
+            ExpectedWorkerName = "ExpectedWorkerName",
+            RequirePinnedIdentity = true
+        };
+
+        var workerMismatch = new ExternalEngineeringWorker(
+            PlcVendor.Generic,
+            "WorkerMismatch",
+            configMismatch,
+            mockDetector,
+            wsManager,
+            new MockProcessRunner(createProc()));
+
+        var job = new EngineeringJobRequest(
+            JobId: "job-id-test",
+            JobType: EngineeringJobType.InspectProject,
+            Vendor: PlcVendor.Generic,
+            ProjectPath: dummyProj);
+
+        var resultMismatch = await workerMismatch.ExecuteAsync(job);
+        Assert.False(resultMismatch.Success);
+        Assert.Equal(CapabilityStatus.Experimental, resultMismatch.Status);
+        Assert.Contains("Worker identity verification failed", resultMismatch.Message);
+
+        // 2. Unpinned configuration with RequirePinnedIdentity=true fails closed
+        var configUnpinned = new ExternalEngineeringWorkerConfig
+        {
+            ExecutablePath = _dummyExePath,
+            AllowedExecutablePaths = new() { _dummyExePath },
+            AllowedWorkspaceRoots = new() { _tempWorkspace },
+            RequirePinnedIdentity = true
+        };
+
+        var workerUnpinned = new ExternalEngineeringWorker(
+            PlcVendor.Generic,
+            "WorkerUnpinned",
+            configUnpinned,
+            mockDetector,
+            wsManager,
+            new MockProcessRunner(createProc()));
+
+        var resultUnpinned = await workerUnpinned.ExecuteAsync(job);
+        Assert.False(resultUnpinned.Success);
+        Assert.Equal(CapabilityStatus.Experimental, resultUnpinned.Status);
+        Assert.Contains("Worker identity is not pinned", resultUnpinned.Message);
+    }
+
+    [Fact]
+    public void SecurityPolicy_RejectsBroadWorkspaceRoots()
+    {
+        string rootDir = Path.GetPathRoot(Environment.CurrentDirectory)!;
+        Assert.Throws<UnauthorizedAccessException>(() => ExternalWorkerSecurityPolicy.ValidateWorkspaceRoot(rootDir));
+
+        string tempRoot = Path.GetTempPath();
+        Assert.Throws<UnauthorizedAccessException>(() => ExternalWorkerSecurityPolicy.ValidateWorkspaceRoot(tempRoot));
+
+        var config = new ExternalEngineeringWorkerConfig
+        {
+            ExecutablePath = _dummyExePath,
+            AllowedExecutablePaths = new() { _dummyExePath },
+            AllowedWorkspaceRoots = new() { rootDir }
+        };
+
+        var mockDetector = new FakeInstalledDetector(PlcVendor.Generic, "CODESYS", "CODESYS V3");
+        var wsManager = new ProjectWorkspaceManager(_tempWorkspace);
+
+        Assert.Throws<UnauthorizedAccessException>(() =>
+            new ExternalEngineeringWorker(PlcVendor.Generic, "Test", config, mockDetector, wsManager));
     }
 
     private static string? FindPythonExecutable()
