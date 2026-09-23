@@ -45,12 +45,15 @@ public sealed class ServerGovernanceServices
     {
         cancellationToken.ThrowIfCancellationRequested();
         var capabilities = target.Capabilities.Items.ToList();
+        var smartReady = SmartWorker is not null && target.Vendor == PlcVendor.Siemens;
         capabilities.Add(new CapabilityDescriptor(
-            "smart_offline_inspect",
-            SmartWorker is not null && target.Vendor == PlcVendor.Siemens ? CapabilityStatus.Experimental : CapabilityStatus.Unsupported,
-            SmartWorker is not null && target.Vendor == PlcVendor.Siemens
-                ? "Explicit local project root configured; V2 offline overview only. This does not prove target CPU compatibility."
+            "smart_offline_inspect", smartReady ? CapabilityStatus.Experimental : CapabilityStatus.Unsupported,
+            smartReady ? "Explicit local root configured; SMART V2 offline overview, independent of target CPU compatibility."
                 : "SMART worker not configured for this target; local IDE detection alone is not a target capability."));
+        capabilities.Add(new CapabilityDescriptor(
+            "smart_engine_validate", smartReady ? CapabilityStatus.Experimental : CapabilityStatus.Unsupported,
+            smartReady ? "On a protected workcopy, starts a separate MicroWIN instance to validate selected networks; requires interactive desktop and compatible project."
+                : "SMART validation worker unavailable."));
         return await Task.FromResult(new CapabilityReport(
             target.Id,
             "capability-report-v1",

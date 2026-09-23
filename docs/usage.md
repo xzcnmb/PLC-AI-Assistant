@@ -120,11 +120,11 @@ dotnet src/PlcMcp.Server/bin/Release/net8.0/PlcMcp.Server.dll --config profiles/
 
 ## 8. 有限只读监控与离线 HMI 组态
 
-调用 `plc_monitor_window` 并传入 `targetId`、`tags`，可选 `intervalMs` (50～60000，真实目标最少 200)、`durationSeconds` (最多 600)、`maxSamples` (最多 100)。返回每次采样的质量码、时间、变化标记与摘要。服务绝不保证多个点位处于同一个 PLC 扫描周期，因此 `snapshotGuarantee` 始终为 `none`；这不是持续 SCADA 采集服务。
+调用 `plc_monitor_window` 并传入 `targetId`、`tags`，可选 `intervalMs` (50～60000，真实目标最少 200)、`durationSeconds` (当前 stdio 单次最多 15 秒)、`maxSamples` (最多 20)。长采样可能阻塞同一 stdio 服务的其他请求，因此该工具仅用于短窗口检查；运行时底层的 10 分钟会话 API 尚未作为 MCP 后台订阅开放。返回每次采样的质量码、时间、变化标记与摘要。服务绝不保证多个点位处于同一个 PLC 扫描周期，因此 `snapshotGuarantee` 始终为 `none`；这不是持续 SCADA 采集服务。
 
 HMI 组态输入是厂商中立 JSON manifest，文件必须放在已配置的 `--smart-project-root` 工程目录里（该选项在此也作为离线工程根目录）。`plc_hmi_validate` 将它与 MCP 目标的标签表比对；`plc_hmi_generate` 校验通过后，向 Server 的 `data/workspaces/hmi/<id>` 新目录输出 JSON/CSV 及 SHA-256。目标厂商必须与 HMI manifest 一致，不能用空 PLC 标签集合跳过绑定检查。它不是 WinCC/GOT/NA 原生工程，也不会发布至触摸屏。
 
-工程团队也可配置外部 JSON-RPC worker 的白名单可执行程序与工程工作区，代码库中已有 handshake/doctor/submit/status/artifacts/cancel 协议和进程超时/输出限制；但**当前仓库未包含 TIA/CODESYS/GX/Sysmac/InoProShop 的真实工程 worker**，没有软件和授权时返回 Unsupported。更多实现边界见 [架构设计](research-and-architecture.md)。
+代码库中已有外部 JSON-RPC worker 的 handshake/doctor/submit/status/artifacts/cancel 进程协议和进程超时/输出限制，但**当前 Server 尚无外部 worker 配置入口，也未包含 TIA/CODESYS/GX/Sysmac/InoProShop 的真实工程 worker**。此代码仅供集成开发和 mock 测试，不能将 worker 自报完成视作厂商编译证据。更多实现边界见 [架构设计](research-and-architecture.md)。
 
 ## 9. 当前不能做的操作
 

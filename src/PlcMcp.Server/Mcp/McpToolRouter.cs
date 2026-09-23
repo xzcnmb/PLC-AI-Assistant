@@ -290,27 +290,29 @@ public sealed class McpToolRouter
         if (_governance.SmartWorker is not null)
             Register("plc_project_inspect", "Inspects Siemens SMART V2 offline from a protected workcopy; V3 encrypted data is reported unsupported.", true, false,
                 new { type = "object", properties = new { projectPath = new { type = "string" }, vendor = new { type = "string" } }, required = new[] { "projectPath", "vendor" } }, HandleProjectInspectAsync);
-        Register("plc_lint_program", "Runs heuristic ST/SCL precheck; this is not vendor compiler validation.", true, false,
+        Register("plc_lint_program", "Runs bounded heuristic ST/SCL precheck; filePath requires configured engineering root.", true, false,
             new { type = "object", properties = new { source = new { type = "string" }, filePath = new { type = "string" } }, required = Array.Empty<string>() }, HandleLintProgramAsync);
-        Register("plc_compare_projects", "Compares two supported PLCopen XML projects offline.", true, false,
-            new { type = "object", properties = new { leftPath = new { type = "string" }, rightPath = new { type = "string" } }, required = new[] { "leftPath", "rightPath" } }, HandleCompareProjectsAsync);
+        if (_governance.SmartProjectRoot is not null)
+            Register("plc_compare_projects", "Compares two <=1 MiB PLCopen XML files within the configured engineering root.", true, false,
+                new { type = "object", properties = new { leftPath = new { type = "string" }, rightPath = new { type = "string" } }, required = new[] { "leftPath", "rightPath" } }, HandleCompareProjectsAsync);
         Register("plc_get_capabilities_report", "Returns capability evidence and local doctor status for a target.", true, false,
             new { type = "object", properties = new { targetId = new { type = "string" } }, required = new[] { "targetId" } }, HandleCapabilityReportAsync);
-        Register("plc_get_job", "Returns a persisted engineering/deployment job and its state.", true, false,
-            new { type = "object", properties = new { jobId = new { type = "string" } }, required = new[] { "jobId" } }, HandleGetJobAsync);
         Register("plc_get_audit", "Verifies and reads the append-only audit hash chain.", true, false,
             new { type = "object", properties = new { verify = new { type = "boolean" } }, required = Array.Empty<string>() }, HandleGetAuditAsync);
         Register("plc_monitor_window", "Samples a finite read-only window; values are not an atomic PLC scan snapshot.", true, false,
             new { type = "object", properties = new {
                 targetId = new { type = "string" }, tags = new { type = "array", items = new { type = "string" } },
                 intervalMs = new { type = "integer", minimum = 50, maximum = 60000 },
-                durationSeconds = new { type = "number", minimum = 0.05, maximum = 600 },
-                maxSamples = new { type = "integer", minimum = 1, maximum = 100 }
+                durationSeconds = new { type = "number", minimum = 0.05, maximum = 15 },
+                maxSamples = new { type = "integer", minimum = 1, maximum = 20 }
             }, required = new[] { "targetId", "tags" } }, HandleMonitorWindowAsync);
-        Register("plc_hmi_validate", "Validates vendor-neutral HMI bindings/alarms/recipes against a configured PLC tag manifest; no HMI device contact.", true, false,
-            new { type = "object", properties = new { targetId = new { type = "string" }, manifestPath = new { type = "string" } }, required = new[] { "targetId", "manifestPath" } }, HandleHmiValidateAsync);
-        Register("plc_hmi_generate", "Writes vendor-neutral JSON/CSV HMI artifacts to a new directory under the local workspaces root; no HMI publish.", false, false,
-            new { type = "object", properties = new { targetId = new { type = "string" }, manifestPath = new { type = "string" } }, required = new[] { "targetId", "manifestPath" } }, HandleHmiGenerateAsync);
+        if (_governance.SmartProjectRoot is not null)
+        {
+            Register("plc_hmi_validate", "Validates vendor-neutral HMI bindings/alarms/recipes against a configured PLC tag manifest; no HMI device contact.", true, false,
+                new { type = "object", properties = new { targetId = new { type = "string" }, manifestPath = new { type = "string" } }, required = new[] { "targetId", "manifestPath" } }, HandleHmiValidateAsync);
+            Register("plc_hmi_generate", "Writes vendor-neutral JSON/CSV HMI artifacts to a new directory under the local workspaces root; no HMI publish.", false, false,
+                new { type = "object", properties = new { targetId = new { type = "string" }, manifestPath = new { type = "string" } }, required = new[] { "targetId", "manifestPath" } }, HandleHmiGenerateAsync);
+        }
     }
 
     private void Register(
@@ -451,21 +453,31 @@ public sealed class McpToolRouter
         return await _governance.SmartWorker.ExecuteAsync(job, cancellationToken).ConfigureAwait(false);
     }
 
+    private string ReadAllowedEngineeringFile(string requestedPath)
+    {
+        var root = _governance.SmartProjectRoot ?? throw new NotSupportedException(
+            "File operations require --smart-project-root; pass bounded inline source for the standalone linter.");
+        var safe = PlcMcp.Engineering.Workspace.ProjectWorkspaceManager.SanitizePath(requestedPath, root);
+        var file = new FileInfo(safe);
+        if (!file.Exists || file.Length > 1_048_576)
+            throw new ArgumentException("Engineering input file must exist and be <=1 MiB under the configured root.");
+        return safe;
+    }
+
     private Task<object> HandleLintProgramAsync(JsonElement args, CancellationToken cancellationToken)
     {
         var source = TryGetString(args, "source");
-        if (string.IsNullOrWhiteSpace(source))
-        {
-            var filePath = RequireString(args, "filePath", "file_path");
-            source = File.ReadAllText(filePath);
-        }
+        if (source is null)
+            source = File.ReadAllText(ReadAllowedEngineeringFile(RequireString(args, "filePath", "file_path")));
+        if (source.Length > 1_048_576)
+            throw new ArgumentException("Inline ST source is too large (maximum 1 MiB characters).");
         return Task.FromResult<object>(_governance.StAnalyzer.Analyze(source));
     }
 
     private Task<object> HandleCompareProjectsAsync(JsonElement args, CancellationToken cancellationToken)
     {
-        var left = _governance.Plcopen.ParseFile(RequireString(args, "leftPath", "left_path"));
-        var right = _governance.Plcopen.ParseFile(RequireString(args, "rightPath", "right_path"));
+        var left = _governance.Plcopen.ParseFile(ReadAllowedEngineeringFile(RequireString(args, "leftPath", "left_path")));
+        var right = _governance.Plcopen.ParseFile(ReadAllowedEngineeringFile(RequireString(args, "rightPath", "right_path")));
         return Task.FromResult<object>(_governance.Plcopen.Compare(left, right));
     }
 
@@ -520,9 +532,9 @@ public sealed class McpToolRouter
         var targetId = RequireString(args, "targetId", "target_id");
         var tags = RequireStringList(args, "tags");
         var target = _service.GetTarget(targetId);
-        var maxSamples = ReadBoundedInteger(args, "maxSamples", 3, 1, 100);
+        var maxSamples = ReadBoundedInteger(args, "maxSamples", 3, 1, 20);
         var intervalMs = ReadBoundedInteger(args, "intervalMs", 500, 50, 60000);
-        var durationSeconds = ReadBoundedDouble(args, "durationSeconds", 10, 0.05, 600);
+        var durationSeconds = ReadBoundedDouble(args, "durationSeconds", 5, 0.05, 15);
         if (!target.IsSimulation && intervalMs < 200)
             throw new ArgumentException("Physical targets require at least 200 ms between monitoring samples.");
         var request = new MonitoringRequest
