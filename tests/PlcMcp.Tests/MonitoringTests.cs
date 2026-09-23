@@ -399,7 +399,7 @@ public class MonitoringTests
             Family: "S7-1200",
             Model: "CPU 1214C",
             Firmware: "V4.4",
-            Endpoint: new EndpointProfile("192.168.0.1", 102, TransportKind.S7Comm),
+            Endpoint: new EndpointProfile("192.168.1.10", 102, TransportKind.S7Comm),
             RuntimeProtocols: [TransportKind.S7Comm],
             EngineeringBackend: null,
             Capabilities: new CapabilitySet([]),

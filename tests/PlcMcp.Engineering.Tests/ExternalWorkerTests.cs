@@ -306,7 +306,7 @@ public class ExternalWorkerTests : IDisposable
                     id = id,
                     result = new WorkerHandshakeResponse(
                         WorkerName: "Fake-Codesys-Worker",
-                        WorkerVersion: "1.0.0-mock",
+                        WorkerVersion: "3.5.19.0",
                         ProtocolVersion: "1.0",
                         Vendor: "CODESYS",
                         Bitness: "64-bit",
