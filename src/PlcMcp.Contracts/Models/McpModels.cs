@@ -110,3 +110,4 @@ public sealed record ToolCallResult
 }
 
 public sealed record JsonRpcError(int Code, string Message, object? Data = null);
+

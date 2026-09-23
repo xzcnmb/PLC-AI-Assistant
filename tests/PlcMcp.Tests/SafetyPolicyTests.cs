@@ -19,7 +19,7 @@ public class SafetyPolicyTests
             "S7-1500",
             "1516-3 PN/DP",
             "V2.9",
-            new EndpointProfile("192.0.2.10", 102, TransportKind.S7Comm, 0, 1),
+            new EndpointProfile("[IP]", 102, TransportKind.S7Comm, 0, 1),
             [TransportKind.S7Comm],
             null,
             _simulationTarget.Capabilities,

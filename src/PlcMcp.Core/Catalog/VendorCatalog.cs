@@ -30,25 +30,25 @@ public static class VendorCatalog
 
     private static TargetProfile CreateSiemensSimulation() => new(
         "sim-siemens", PlcVendor.Siemens, "S7-200 SMART", "simulation", null,
-        new("[IP]", 0, TransportKind.Simulation, 0, 1),
+        new("127.0.0.1", 0, TransportKind.Simulation, 0, 1),
         [TransportKind.Simulation], null,
         SimulationCapabilities("S7-200 SMART simulation"), "default", true);
 
     private static TargetProfile CreateOmronSimulation() => new(
         "sim-omron", PlcVendor.Omron, "CJ/NJ", "simulation", null,
-        new("[IP]", 0, TransportKind.Simulation, Unit: 0),
+        new("127.0.0.1", 0, TransportKind.Simulation, Unit: 0),
         [TransportKind.Simulation], null,
         SimulationCapabilities("Omron runtime simulation"), "default", true);
 
     private static TargetProfile CreateMitsubishiSimulation() => new(
         "sim-mitsubishi", PlcVendor.Mitsubishi, "iQ-F/iQ-R", "simulation", null,
-        new("[IP]", 0, TransportKind.Simulation),
+        new("127.0.0.1", 0, TransportKind.Simulation),
         [TransportKind.Simulation], null,
         SimulationCapabilities("Mitsubishi runtime simulation"), "default", true);
 
     private static TargetProfile CreateInovanceSimulation() => new(
         "sim-inovance", PlcVendor.Inovance, "H5U/AM", "simulation", null,
-        new("[IP]", 0, TransportKind.Simulation),
+        new("127.0.0.1", 0, TransportKind.Simulation),
         [TransportKind.Simulation], null,
         SimulationCapabilities("Inovance runtime simulation"), "default", true);
 
