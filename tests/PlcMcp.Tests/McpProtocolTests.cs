@@ -57,6 +57,10 @@ public sealed class McpProtocolTests
             Assert.True(annotation.TryGetProperty("destructiveHint", out _));
         });
         Assert.DoesNotContain(tools, t => t.GetProperty("name").GetString() is "plc_download_project" or "plc_force_io");
+        Assert.Contains(tools, t => t.GetProperty("name").GetString() == "plc_doctor");
+        Assert.DoesNotContain(tools, t => t.GetProperty("name").GetString() == "plc_project_inspect");
+        Assert.Contains(tools, t => t.GetProperty("name").GetString() == "plc_lint_program");
+        Assert.Contains(tools, t => t.GetProperty("name").GetString() == "plc_get_audit");
     }
 
     [Fact]

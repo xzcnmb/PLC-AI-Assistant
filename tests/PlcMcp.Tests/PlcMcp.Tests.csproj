@@ -24,6 +24,7 @@
     <ProjectReference Include="..\..\src\PlcMcp.Runtime\PlcMcp.Runtime.csproj" />
     <ProjectReference Include="..\..\src\PlcMcp.Adapters\PlcMcp.Adapters.csproj" />
     <ProjectReference Include="..\..\src\PlcMcp.Server\PlcMcp.Server.csproj" />
+    <ProjectReference Include="..\..\src\PlcMcp.Engineering\PlcMcp.Engineering.csproj" />
   </ItemGroup>
 
 </Project>
