@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\PlcMcp.Contracts\PlcMcp.Contracts.csproj" />
+    <ProjectReference Include="..\PlcMcp.Core\PlcMcp.Core.csproj" />
+    <ProjectReference Include="..\PlcMcp.Runtime\PlcMcp.Runtime.csproj" />
+    <ProjectReference Include="..\PlcMcp.Adapters\PlcMcp.Adapters.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\licenses\S7netplus-MIT.txt" Link="licenses\S7netplus-MIT.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

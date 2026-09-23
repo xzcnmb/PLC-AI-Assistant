@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "line1-siemens-smart",
+      "vendor": "Siemens",
+      "family": "S7-200 SMART",
+      "model": "CPU ST40",
+      "firmware": "replace-with-verified-version",
+      "endpoint": {
+        "host": "192.0.2.10",
+        "port": 102,
+        "transport": "S7Comm",
+        "rack": 0,
+        "slot": 1,
+        "timeoutMs": 3000
+      },
+      "tags": [
+        { "name": "ProcessRunning", "nativeAddress": "M0.0", "dataType": "Bool", "canRead": true, "canWrite": false },
+        { "name": "PressureActual", "nativeAddress": "VD200", "dataType": "Real", "unit": "bar", "minimum": 0, "maximum": 10, "canRead": true, "canWrite": false }
+      ]
+    },
+    {
+      "id": "line2-omron-fins",
+      "vendor": "Omron",
+      "family": "CJ2",
+      "endpoint": {
+        "host": "192.0.2.20",
+        "port": 9600,
+        "transport": "Fins",
+        "unit": 0,
+        "timeoutMs": 3000
+      },
+      "tags": [
+        { "name": "PressureActual", "nativeAddress": "D200", "dataType": "Int16", "unit": "kPa", "canRead": true, "canWrite": false }
+      ]
+    },
+    {
+      "id": "line3-mitsubishi-slmp",
+      "vendor": "Mitsubishi",
+      "family": "iQ-F",
+      "endpoint": {
+        "host": "192.0.2.30",
+        "port": 5000,
+        "transport": "Slmp",
+        "timeoutMs": 3000
+      },
+      "tags": [
+        { "name": "Counter", "nativeAddress": "D100", "dataType": "Int16", "canRead": true, "canWrite": false },
+        { "name": "Ready", "nativeAddress": "M10", "dataType": "Bool", "canRead": true, "canWrite": false }
+      ]
+    },
+    {
+      "id": "line4-inovance-modbus",
+      "vendor": "Inovance",
+      "family": "H5U",
+      "endpoint": {
+        "host": "192.0.2.40",
+        "port": 502,
+        "transport": "ModbusTcp",
+        "unit": 1,
+        "timeoutMs": 3000
+      },
+      "tags": [
+        { "name": "Counter", "nativeAddress": "HR100", "dataType": "Int16", "canRead": true, "canWrite": false },
+        { "name": "Ready", "nativeAddress": "C100", "dataType": "Bool", "canRead": true, "canWrite": false }
+      ]
+    }
+  ]
+}
