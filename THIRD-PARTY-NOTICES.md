@@ -10,7 +10,7 @@ This file records the direct dependencies and referenced projects currently used
 - Project: <https://github.com/killnine/s7netplus>
 - Repository metadata in the restored package identifies the project as a continuation of the S7.Net library and the repository is MIT licensed.
 - License text: <https://github.com/S7NetPlus/s7netplus/blob/main/License.txt>
-- Usage here: read-only S7comm session/read adapter. The library has write APIs, but PLC-MCP does not expose them through `IPlcProtocolAdapter` or MCP tools.
+- Usage here: S7comm session/read adapter and isolated parameter-only Write Var code exercised against localhost fixtures. The physical `IPlcProtocolAdapter` and MCP configuration still do not expose physical writes; production use needs an independent approval/lease/readback path and device qualification.
 
 ## Reference projects and protocol specifications
 
@@ -23,6 +23,12 @@ These are research references, not copied source in this repository. Before copy
 - Beremiz: <https://github.com/beremiz/beremiz>. IEC 61131-3/open tooling reference only.
 - OpenPLC: <https://github.com/thiagoralves/OpenPLC_v3>. Soft PLC/testbed reference only.
 - Mitsubishi GX Works3 bridge: <https://github.com/coder007rahul/gxworks3-mcp-bridge>. UI automation safety/versioning reference only; not a dependency.
+
+## Optional local SMART engineering bridge
+
+- The optional `SiemensSmartBridge` invokes a separately installed `smart200_mcp` Python package and STEP 7-MicroWIN SMART from a protected project workcopy. The Python package and native Siemens engine/injector binaries are **not** included in this repository or release output.
+- Users must install and license the Siemens software and separately review the installed package's own license and security posture before enabling `--smart-project-root`.
+- The bridge does not call PLC download, RUN/STOP or force operations. Its MicroWIN process may need an interactive Windows desktop even though it does not attach to an existing user window.
 
 ## Vendor software and documentation
 

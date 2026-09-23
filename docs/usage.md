@@ -93,8 +93,33 @@ dotnet src/PlcMcp.Server/bin/Release/net8.0/PlcMcp.Server.dll --config profiles/
 | 中文别名重复 | 同一 changes 中规范名与别名指向同一标签会被拒绝 |
 | 计划无法再次应用 | token 错误、过期、取消、状态变化或成功后的计划均不可复用，重新规划 |
 
-## 7. 当前不能做的操作
+## 7. 本机工程分析与 SMART 可选桥
 
-程序自动编译下载、硬件/HMI 组态、在线编辑、真实写参数、CPU RUN/STOP、强制 IO、持久审计、OPC UA 安全会话和持续订阅均未完成。离线编译不属于现场写入风险，但仍需实现厂商工程 worker。
+无需厂商软件也可用 `plc_lint_program` 预检 ST/SCL 代码块、`plc_compare_projects` 比对 PLCopen XML、`plc_doctor` 查看本机软件检测。静态预检不等于编译；PLCopen XML 解析禁止 DTD/外部实体。
+
+本机若已安装 STEP 7-MicroWIN SMART 和独立的 `smart200_mcp` Python 包，可在 MCP 客户端 args 中加 `--smart-project-root` 与一个**绝对目录**，只授权该目录中的 SMART 工程只读/离线分析：
+
+```json
+{
+  "mcpServers": {
+    "plc-ai-assistant-smart": {
+      "command": "dotnet",
+      "args": [
+        "C:\\Projects\\PLC-AI-Assistant\\src\\PlcMcp.Server\\bin\\Release\\net8.0\\PlcMcp.Server.dll",
+        "--smart-project-root",
+        "D:\\PLCProjects\\Review"
+      ]
+    }
+  }
+}
+```
+
+启用后 `plc_smart_inspect` 读取 V2 项目概览，V3 加密段会报告离线无法解析；`plc_smart_validate` 对指定 POU 做网络有效性验证。它们在独立工作副本上运行，validate 会拉起本机 MicroWIN 独立实例，可能需要交互式桌面会话；不会下载到 PLC。未设置根目录或依赖不可用时工具不会注册。不要把客户生产工程复制到 Git 仓库，样例的 `--config` 只读 PLC 模式与 `--smart-project-root` 可同时使用。
+
+持久治理目前支持 `plc_get_job` / `plc_get_audit` 查询；审计哈希链坏损时显式拒绝读/追加，残缺尾行只能手工显式修复。模拟写入仍使用内存审计；外部企业身份提供方、持久审批消费和物理执行路径没有接线。
+
+## 8. 当前不能做的操作
+
+跨品牌程序自动编译下载、硬件/HMI 组态、在线编辑、真实写参数、CPU RUN/STOP、强制 IO、OPC UA 安全会话和持续订阅均未完成。四协议参数写帧只在 localhost 回环测试，`canWrite` 对物理目标仍须 false。SMART 工程离线分析不代表现场程序下载能力。
 
 使用问题可在仓库提交 Issue，附软件版本、已脱敏配置、错误信息、复现步骤和期望行为。也欢迎加入 QQ 群 **462720530** 交流。

@@ -4,7 +4,7 @@
 
 让支持 MCP 的 AI 客户端通过统一接口查询控制器能力、浏览变量、读取数据，并在模拟环境中验证变更计划。长期目标是接入厂商工程软件，覆盖程序编写、编译、调试、下载、硬件与 HMI 组态。
 
-当前版本为 **v0.1 原型**：已实现四协议只读通信基座和模拟操作链；工程软件后端仍待实现，尚不能替代完整的 PLC 工程与现场验收流程。
+当前版本仍属**开发中原型**：四协议只读通信与模拟写入之外，新增了四协议参数写帧（**仅协议层/localhost 验证，物理写入口仍禁用**）、安全的工程文件副本、ST 启发式预检、PLCopen XML 解析、厂商软件 doctor、持久审计/作业与可选 MicroWIN SMART 离线工程桥。真实 PLC 下载、RUN/STOP、强制、HMI 组态和跨品牌工程编译仍未完成，不能替代完整的 PLC 工程与现场验收流程。
 
 **QQ 交流群：462720530** — 欢迎交流 PLC 与 AI/MCP 集成、多品牌协议适配、工程自动化和使用反馈。反馈现场问题时请脱敏工程文件、网络地址与设备凭据。
 
@@ -24,12 +24,16 @@
 | FINS/TCP 读取 | 节点协商、DM/CIO/W/H/A 字/位读取；localhost 已测，真机待验 |
 | SLMP 3E binary 读取 | D/R/W 字与 M/X/Y/B 位；localhost 已测，真机待验 |
 | Modbus TCP 读取 | HR/IR 数值、C/DI 位，零基地址；localhost 读取/异常/分段/超时已测 |
+| 四协议参数写帧 | 写帧/响应/超时在 localhost 测试；**未接入物理 Runtime 与 MCP，真实目标不可写** |
 | 符号浏览 | 读取配置 manifest，支持中英文别名；不是从 PLC 自动上传符号 |
 | 模拟写入 | 范围/类型、一次性计划、状态哈希、执行前意图日志；仅影响内存 |
+| 工程离线工具 | `plc_doctor`、ST 预检、PLCopen XML 比对、隔离工作副本；不是厂商编译 |
+| SMART 本机工程桥 | `--smart-project-root` 明确授权后可离线检查 V2、验证网络；需要本机 MicroWIN SMART 及可选 smart200_mcp，不连接 PLC |
+| 治理基座 | 审计哈希链、作业崩溃隔离、目标租约、外部审批契约；真实物理动作尚未接线 |
 | OPC UA/CIP/持续监控 | 领域模型/设计中保留，客户端和订阅尚未实现 |
-| 工程编写、编译、仿真、下载、硬件/HMI 组态 | 工程后端尚未实现，工具不注册 |
+| 跨品牌工程编译、现场下载、RUN/STOP、Force、HMI/硬件组态 | **未实现**，无执行入口 |
 
-真实协议能力均为 `experimental`，没有连接或写入现场设备。不能用本机测试替代精确 CPU/固件/IDE 版本的台架验收。S7-200 SMART 的工程软件是 Micro/WIN SMART，不是 TIA Openness。
+真实协议能力均为 `experimental`，没有连接或写入现场设备。不能用本机测试替代精确 CPU/固件/IDE 版本的台架验收。S7-200 SMART 的工程软件是 Micro/WIN SMART，不是 TIA Openness。本机只发现 MicroWIN SMART V2.8，未发现其他品牌 IDE；安装探测不等于授权、编译能力或实际设备兼容性。SMART 离线桥通过另行安装的 `smart200_mcp` Python 环境工作，该依赖与西门子 DLL 不随仓库发布。
 
 ## 构建和启动
 
@@ -85,6 +89,10 @@ dotnet D:\PLCMCP\src\PlcMcp.Server\bin\Release\net8.0\PlcMcp.Server.dll --config
 | plc_read_tags | targetId、tags；返回类型、单位、质量、时间 |
 | plc_plan_write | **模拟模式** targetId、changes、可选 lifetimeMinutes（最多 5） |
 | plc_apply_write | **模拟模式** planId、approvalToken，同一进程内消费 |
+| plc_doctor / plc_get_capabilities_report | 只读扫描本机软件版本与能力证据（不连接 PLC） |
+| plc_lint_program / plc_compare_projects | ST 启发式预检、PLCopen XML 文件比对（不是厂商编译） |
+| plc_get_audit / plc_get_job | 读取持久审计链和作业状态；坏审计日志会显式报错 |
+| plc_smart_inspect / plc_smart_validate | 仅在显式启用 SMART 工程目录且本机桥可用时出现；先建立工作副本，不连接 PLC |
 
 stdin/stdout 每行一个 JSON 消息；日志仅 stderr。请先 initialize，再发送 initialized 通知。示例：
 
@@ -103,12 +111,12 @@ stdin/stdout 每行一个 JSON 消息；日志仅 stderr。请先 initialize，�
 
 `approvalToken` 是模拟计划消费 token，**不构成人工身份认证或人工审批证明**。计划最长 5 分钟；正确或错误 token 的一次尝试都会消费计划。状态变化、过期或重复使用会失败，需重新规划。不会授予生产权限。
 
-每项写入前记录 `write_intent`，成功后记录 `write_tag`。逐标签执行不保证整批原子提交；失败返回已完成的 Values 和数量，无自动回滚。审计与计划保存在内存，进程退出后丢失；不宣称不可篡改或持久化。Physical write、force、RUN/STOP 和工程下载没有可执行路径。离线编译未实现是后端缺失，不等同现场危险操作。
+每项写入前记录 `write_intent`，成功后记录 `write_tag`。逐标签执行不保证整批原子提交；失败返回已完成的 Values 和数量，无自动回滚。模拟写入沿用内存计划与内存审计，进程退出后丢失；新建的 `FileAuditLog` 与 `FileJobStateMachine` 供工程作业治理使用，已做坏链拒绝追加和崩溃作业隔离，但尚未接管模拟写入的审计。SHA-256 哈希链没有外部锚点，不能防止掌握整个文件写入权限者重写历史。Physical write、force、RUN/STOP 和工程下载没有可执行路径。SMART 工程 worker 可以在独立工作副本调用本机编译器做验证，但此能力不等同跨品牌编译。
 
 ## 测试与局限
 
 `tests/PlcMcp.Tests` 包含类型/范围、别名、状态漂移、MCP notification/annotations、协议固定帧与 loopback TCP 测试。所有 TCP 测试仅监听 127.0.0.1 临时端口，验证只读请求，不涉及现场网。
 
-本次验收：Release 构建 0 警告/0 错误，74 项测试全部通过。构建后可运行 `python scripts/smoke_test.py`，验证独立进程的 stdio、中文别名、越界拒绝及只读配置工具清单；该脚本不会调用物理目标 probe/read。
+测试覆盖协议固定帧与本机回环（含只写参数区报文）、治理失败路径、工作副本、防 XXE、SMART 工程桥以及 MCP 工具。最终验收结果以本次 Release 构建和 `dotnet test` 的实际输出为准。构建后可运行 `python scripts/smoke_test.py` 验证独立进程的 stdio；脚本不会调用物理目标 probe/read。
 
-内存模拟与自建协议服务器不能证明厂商互操作性；后续需用厂商仿真器和真实 CPU 做独立对照。工程端仍需安装授权 IDE、精确版本的 worker，并完成备份、编译、往返、落盘和下载后回读验证。资源复用与许可见 [第三方说明](THIRD-PARTY-NOTICES.md)。
+内存模拟与自建协议服务器不能证明厂商互操作性；后续需用厂商仿真器和真实 CPU 做独立对照。除可选 MicroWIN SMART 桥外，其他品牌工程后端仍需安装授权 IDE、精确版本的 worker，并完成编译、往返、落盘和目标回读验证。仓库未集成 CODESYS/TIA/GX/Sysmac 自动编译下载；资源复用与许可见 [第三方说明](THIRD-PARTY-NOTICES.md)。

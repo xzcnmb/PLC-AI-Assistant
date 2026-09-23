@@ -34,7 +34,10 @@ messages = [initialize, request(None, "notifications/initialized"), request(2, "
     request(None, "tools/call", {"name": "plc_list_targets", "arguments": {}})]
 responses = exchange(messages)
 assert [r["id"] for r in responses] == [1, 2, 3, 4], "Notification produced a response"
-assert len(responses[1]["result"]["tools"]) == 8
+tool_names = {t["name"] for t in responses[1]["result"]["tools"]}
+assert {"plc_list_targets", "plc_read_tags", "plc_doctor", "plc_lint_program", "plc_get_audit"} <= tool_names
+assert "plc_download_project" not in tool_names and "plc_force_io" not in tool_names
+assert "plc_smart_validate" not in tool_names, "SMART worker must be explicitly configured"
 assert responses[3]["result"]["isError"] is True, "Out-of-range value was accepted"
 value = json.loads(responses[2]["result"]["content"][0]["text"])["values"][0]
 assert value["value"] == 2.5 and value["quality"] == "simulated"
