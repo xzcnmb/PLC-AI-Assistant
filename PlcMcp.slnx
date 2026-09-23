@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PlcMcp.Adapters/PlcMcp.Adapters.csproj" />
+    <Project Path="src/PlcMcp.Contracts/PlcMcp.Contracts.csproj" />
+    <Project Path="src/PlcMcp.Core/PlcMcp.Core.csproj" />
+    <Project Path="src/PlcMcp.Runtime/PlcMcp.Runtime.csproj" />
+    <Project Path="src/PlcMcp.Server/PlcMcp.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PlcMcp.Tests/PlcMcp.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+.vs/
+TestResults/
+artifacts/
+*.user
+*.suo
+tmp-*.jsonl
+profiles/local*.json
+.zcode/
+.yce/
+.tools/
+.env
+.env.*
+*.pfx
+*.pem
+*.key
