@@ -153,3 +153,4 @@ public sealed record WorkerIdentityExpectation(
     [property: JsonPropertyName("expectedWorkerName")] string? ExpectedWorkerName,
     [property: JsonPropertyName("expectedWorkerVersion")] string? ExpectedWorkerVersion,
     [property: JsonPropertyName("expectedProtocolVersion")] string? ExpectedProtocolVersion = "1.0");
+
