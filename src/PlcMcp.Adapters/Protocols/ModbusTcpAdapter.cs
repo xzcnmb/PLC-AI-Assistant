@@ -42,6 +42,126 @@ public sealed class ModbusTcpAdapter : ReadOnlyTcpAdapter
         return request;
     }
 
+    public static (ushort Address, ushort Count) ParseWrite(TagDefinition tag)
+    {
+        if (tag.SafetyClass != SafetyClass.Parameter)
+            throw new InvalidOperationException($"Tag '{tag.Name}' has safety class '{tag.SafetyClass}'; only Parameter class tags can be written.");
+        if (tag.DataType == PlcDataType.Bool)
+            throw new InvalidOperationException("Direct bit/coil writes are forbidden; only parameter registers can be written.");
+        var match = Regex.Match(tag.NativeAddress, @"^(HR|IR|C|DI)([0-9]+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success || !ushort.TryParse(match.Groups[2].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var address))
+            throw new ArgumentException("Modbus addresses must be zero-based HR100, IR100, C100 or DI100; vendor MW/D addresses require an explicit mapping.");
+        var prefix = match.Groups[1].Value.ToUpperInvariant();
+        if (prefix != "HR")
+            throw new InvalidOperationException($"Address prefix '{prefix}' is not permitted for parameter writes. Only Holding Registers (HR) are allowed.");
+        var size = WireValue.Size(tag.DataType);
+        if (size > 2 && tag.ByteOrder is null)
+            throw new ArgumentException("32/64-bit Modbus values require explicit ByteOrder in the manifest.");
+        var count = (ushort)(size / 2);
+        if (address + count > 65536)
+            throw new ArgumentException("Modbus range exceeds address space.");
+        return (address, count);
+    }
+
+    public static void ValidateValueRange(TagDefinition tag, object value)
+    {
+        if (tag.Minimum is null && tag.Maximum is null) return;
+        var num = Convert.ToDouble(value, CultureInfo.InvariantCulture);
+        if (tag.Minimum is double min && num < min)
+            throw new ArgumentOutOfRangeException(nameof(value), $"Value {num} is below minimum {min}.");
+        if (tag.Maximum is double max && num > max)
+            throw new ArgumentOutOfRangeException(nameof(value), $"Value {num} is above maximum {max}.");
+    }
+
+    public static byte[] BuildWrite(ushort transaction, byte unit, TagDefinition tag, object value)
+    {
+        var (address, count) = ParseWrite(tag);
+        ValidateValueRange(tag, value);
+        var data = WireValue.Encode(value, tag.DataType, tag.ByteOrder ?? PlcByteOrder.BigEndian);
+        if (data.Length != count * 2)
+            throw new InvalidOperationException("Encoded data length does not match register count.");
+
+        var request = new byte[13 + data.Length];
+        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(0), transaction);
+        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(2), 0);
+        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(4), (ushort)(7 + data.Length));
+        request[6] = unit;
+        request[7] = 0x10;
+        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(8), address);
+        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(10), count);
+        request[12] = (byte)data.Length;
+        data.CopyTo(request.AsSpan(13));
+        return request;
+    }
+
+    public static void VerifyWriteResponse(ReadOnlySpan<byte> response, ushort expectedTransaction, byte expectedUnit, ushort expectedAddress, ushort expectedCount)
+    {
+        if (response.Length < 9)
+            throw new InvalidDataException("Modbus response frame is too short.");
+        var transaction = BinaryPrimitives.ReadUInt16BigEndian(response[..2]);
+        var protocol = BinaryPrimitives.ReadUInt16BigEndian(response.Slice(2, 2));
+        var length = BinaryPrimitives.ReadUInt16BigEndian(response.Slice(4, 2));
+        var unit = response[6];
+        var fc = response[7];
+
+        if (transaction != expectedTransaction || protocol != 0 || unit != expectedUnit)
+            throw new InvalidDataException("Modbus response header/transaction mismatch.");
+
+        if (fc == 0x90)
+        {
+            var exceptionCode = response.Length > 8 ? response[8] : (byte)0;
+            throw new InvalidDataException($"Modbus exception code {exceptionCode:X2}.");
+        }
+
+        if (fc != 0x10)
+            throw new InvalidDataException($"Unexpected Modbus function code {fc:X2} in response.");
+
+        if (response.Length < 12 || length != 6)
+            throw new InvalidDataException("Modbus write response length mismatch.");
+
+        var respAddress = BinaryPrimitives.ReadUInt16BigEndian(response.Slice(8, 2));
+        var respCount = BinaryPrimitives.ReadUInt16BigEndian(response.Slice(10, 2));
+        if (respAddress != expectedAddress || respCount != expectedCount)
+            throw new InvalidDataException("Modbus write response address or quantity mismatch.");
+    }
+
+    public async Task<TagValue> WriteParameterAsync(TargetProfile target, TagDefinition tag, object value,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateTarget(target);
+        var (address, count) = ParseWrite(tag);
+        ValidateValueRange(tag, value);
+        var unit = target.Endpoint.Unit ?? 1;
+        if (unit is < 1 or > 255)
+            throw new ArgumentException("Modbus unit must be 1 to 255; broadcast unit 0 is not supported.");
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(target.Endpoint.TimeoutMs);
+        using var client = new TcpClient { NoDelay = true };
+        try
+        {
+            await client.ConnectAsync(target.Endpoint.Host, target.Endpoint.Port, deadline.Token).ConfigureAwait(false);
+            var stream = client.GetStream();
+            const ushort transaction = 1;
+            var request = BuildWrite(transaction, (byte)unit, tag, value);
+            await stream.WriteAsync(request, deadline.Token).ConfigureAwait(false);
+            var header = await ReceiveAsync(stream, 7, deadline.Token).ConfigureAwait(false);
+            var length = BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(4));
+            if (length is < 2 or > 254)
+                throw new InvalidDataException("Invalid Modbus response length.");
+            var payload = await ReceiveAsync(stream, length - 1, deadline.Token).ConfigureAwait(false);
+            var fullResponse = new byte[7 + payload.Length];
+            header.CopyTo(fullResponse, 0);
+            payload.CopyTo(fullResponse, 7);
+            VerifyWriteResponse(fullResponse, transaction, (byte)unit, address, count);
+            return Value(tag, value);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("PLC write timed out; connection was closed.");
+        }
+    }
+
     protected override async Task<IReadOnlyList<TagValue>> ReadConnectedAsync(NetworkStream stream, TargetProfile target,
         IReadOnlyList<TagDefinition> tags, CancellationToken cancellationToken)
     {
