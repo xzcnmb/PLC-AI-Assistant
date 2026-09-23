@@ -4,9 +4,11 @@ using PlcMcp.Adapters;
 using PlcMcp.Contracts.Models;
 using PlcMcp.Core.Catalog;
 using PlcMcp.Runtime;
+using PlcMcp.Runtime.Monitoring;
 using PlcMcp.Server.Governance;
 using PlcMcp.Engineering.Jobs;
 using PlcMcp.Engineering.Models;
+using PlcMcp.Engineering.Hmi;
 
 namespace PlcMcp.Server.Mcp;
 
@@ -15,6 +17,7 @@ public sealed class McpToolRouter
     private readonly PlcRuntimeHost _host;
     private readonly PlcRuntimeService _service;
     private readonly ServerGovernanceServices _governance;
+    private readonly MonitoringService _monitoring;
     private readonly Dictionary<string, Func<JsonElement, CancellationToken, Task<object>>> _handlers;
     private readonly List<ToolDescriptor> _descriptors;
 
@@ -22,6 +25,7 @@ public sealed class McpToolRouter
     {
         _host = host;
         _service = host.Service;
+        _monitoring = new MonitoringService(_service);
         _governance = governance ?? new ServerGovernanceServices(Path.Combine(AppContext.BaseDirectory, "data"));
         _handlers = new(StringComparer.OrdinalIgnoreCase);
         _descriptors = new();
@@ -296,6 +300,17 @@ public sealed class McpToolRouter
             new { type = "object", properties = new { jobId = new { type = "string" } }, required = new[] { "jobId" } }, HandleGetJobAsync);
         Register("plc_get_audit", "Verifies and reads the append-only audit hash chain.", true, false,
             new { type = "object", properties = new { verify = new { type = "boolean" } }, required = Array.Empty<string>() }, HandleGetAuditAsync);
+        Register("plc_monitor_window", "Samples a finite read-only window; values are not an atomic PLC scan snapshot.", true, false,
+            new { type = "object", properties = new {
+                targetId = new { type = "string" }, tags = new { type = "array", items = new { type = "string" } },
+                intervalMs = new { type = "integer", minimum = 50, maximum = 60000 },
+                durationSeconds = new { type = "number", minimum = 0.05, maximum = 600 },
+                maxSamples = new { type = "integer", minimum = 1, maximum = 100 }
+            }, required = new[] { "targetId", "tags" } }, HandleMonitorWindowAsync);
+        Register("plc_hmi_validate", "Validates vendor-neutral HMI bindings/alarms/recipes against a configured PLC tag manifest; no HMI device contact.", true, false,
+            new { type = "object", properties = new { targetId = new { type = "string" }, manifestPath = new { type = "string" } }, required = new[] { "targetId", "manifestPath" } }, HandleHmiValidateAsync);
+        Register("plc_hmi_generate", "Writes vendor-neutral JSON/CSV HMI artifacts to a new directory under the local workspaces root; no HMI publish.", false, false,
+            new { type = "object", properties = new { targetId = new { type = "string" }, manifestPath = new { type = "string" } }, required = new[] { "targetId", "manifestPath" } }, HandleHmiGenerateAsync);
     }
 
     private void Register(
@@ -465,6 +480,75 @@ public sealed class McpToolRouter
         var result = await _governance.Audit.VerifyChainAsync(cancellationToken);
         if (!result.IsValid) return new { verification = result, records = Array.Empty<AuditRecord>() };
         return new { verification = result, records = await _governance.Audit.ReadAllAsync(cancellationToken) };
+    }
+
+    private HmiManifest LoadHmiManifest(JsonElement args, out TargetProfile target)
+    {
+        target = _service.GetTarget(RequireString(args, "targetId", "target_id"));
+        var path = RequireString(args, "manifestPath", "manifest_path");
+        if (_governance.SmartProjectRoot is null)
+            throw new NotSupportedException("HMI source root is not configured; supply --smart-project-root as a local engineering workspace root.");
+        var safe = PlcMcp.Engineering.Workspace.ProjectWorkspaceManager.SanitizePath(path, _governance.SmartProjectRoot);
+        if (!File.Exists(safe) || new FileInfo(safe).Length > 1_048_576)
+            throw new ArgumentException("HMI manifest must exist and be <=1 MiB under the configured engineering root.");
+        var json = File.ReadAllText(safe);
+        var manifest = JsonSerializer.Deserialize<HmiManifest>(json, new JsonSerializerOptions(JsonRpc.SerializerOptions) { PropertyNameCaseInsensitive = true })
+            ?? throw new ArgumentException("HMI manifest cannot be null.");
+        if (manifest.TargetVendor != target.Vendor)
+            throw new ArgumentException("HMI manifest vendor must match the selected PLC target vendor.");
+        return manifest;
+    }
+
+    private Task<object> HandleHmiValidateAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var manifest = LoadHmiManifest(args, out var target);
+        return Task.FromResult<object>(new HmiValidator().Validate(manifest, _service.ListTags(target.Id), requirePlcDefinitions: true));
+    }
+
+    private Task<object> HandleHmiGenerateAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var manifest = LoadHmiManifest(args, out var target);
+        var root = Path.Combine(_governance.DataRoot, "workspaces", "hmi");
+        Directory.CreateDirectory(root);
+        var output = Path.Combine(root, Guid.NewGuid().ToString("N"));
+        return Task.FromResult<object>(new HmiArtifactGenerator(defaultAllowedRoot: root).Generate(
+            manifest, output, _service.ListTags(target.Id), requirePlcDefinitions: true));
+    }
+
+    private async Task<object> HandleMonitorWindowAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var targetId = RequireString(args, "targetId", "target_id");
+        var tags = RequireStringList(args, "tags");
+        var target = _service.GetTarget(targetId);
+        var maxSamples = ReadBoundedInteger(args, "maxSamples", 3, 1, 100);
+        var intervalMs = ReadBoundedInteger(args, "intervalMs", 500, 50, 60000);
+        var durationSeconds = ReadBoundedDouble(args, "durationSeconds", 10, 0.05, 600);
+        if (!target.IsSimulation && intervalMs < 200)
+            throw new ArgumentException("Physical targets require at least 200 ms between monitoring samples.");
+        var request = new MonitoringRequest
+        {
+            TargetId = target.Id, Tags = tags,
+            Interval = TimeSpan.FromMilliseconds(intervalMs),
+            Duration = TimeSpan.FromSeconds(durationSeconds),
+            MaxSamples = maxSamples
+        };
+        return await _monitoring.SampleWindowAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static int ReadBoundedInteger(JsonElement args, string name, int defaultValue, int min, int max)
+    {
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(name, out var value)) return defaultValue;
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out var parsed) || parsed < min || parsed > max)
+            throw new ArgumentException($"Parameter '{name}' must be an integer from {min} to {max}.");
+        return parsed;
+    }
+
+    private static double ReadBoundedDouble(JsonElement args, string name, double defaultValue, double min, double max)
+    {
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(name, out var value)) return defaultValue;
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out var parsed) || !double.IsFinite(parsed) || parsed < min || parsed > max)
+            throw new ArgumentException($"Parameter '{name}' must be a number from {min} to {max}.");
+        return parsed;
     }
 
     private async Task<object> HandleProbeTargetAsync(JsonElement args, CancellationToken cancellationToken)

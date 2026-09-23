@@ -4,7 +4,7 @@
 
 让支持 MCP 的 AI 客户端通过统一接口查询控制器能力、浏览变量、读取数据，并在模拟环境中验证变更计划。长期目标是接入厂商工程软件，覆盖程序编写、编译、调试、下载、硬件与 HMI 组态。
 
-当前版本仍属**开发中原型**：四协议只读通信与模拟写入之外，新增了四协议参数写帧（**仅协议层/localhost 验证，物理写入口仍禁用**）、安全的工程文件副本、ST 启发式预检、PLCopen XML 解析、厂商软件 doctor、持久审计/作业与可选 MicroWIN SMART 离线工程桥。真实 PLC 下载、RUN/STOP、强制、HMI 组态和跨品牌工程编译仍未完成，不能替代完整的 PLC 工程与现场验收流程。
+当前版本仍属**开发中原型**：四协议只读通信与模拟写入之外，新增了四协议参数写帧（**仅协议层/localhost 验证，物理写入口仍禁用**）、限速只读监控、安全的工程文件副本、ST 启发式预检、PLCopen XML 解析、厂商软件 doctor、HMI 离线组态校验/厂商中立产物、持久审计/作业与可选 MicroWIN SMART 离线工程桥。真实 PLC 下载、RUN/STOP、强制、厂商原生 HMI/硬件组态和跨品牌工程编译仍未完成，不能替代完整的 PLC 工程与现场验收流程。
 
 **QQ 交流群：462720530** — 欢迎交流 PLC 与 AI/MCP 集成、多品牌协议适配、工程自动化和使用反馈。反馈现场问题时请脱敏工程文件、网络地址与设备凭据。
 
@@ -30,8 +30,11 @@
 | 工程离线工具 | `plc_doctor`、ST 预检、PLCopen XML 比对、隔离工作副本；不是厂商编译 |
 | SMART 本机工程桥 | `--smart-project-root` 明确授权后可离线检查 V2、验证网络；需要本机 MicroWIN SMART 及可选 smart200_mcp，不连接 PLC |
 | 治理基座 | 审计哈希链、作业崩溃隔离、目标租约、外部审批契约；真实物理动作尚未接线 |
-| OPC UA/CIP/持续监控 | 领域模型/设计中保留，客户端和订阅尚未实现 |
-| 跨品牌工程编译、现场下载、RUN/STOP、Force、HMI/硬件组态 | **未实现**，无执行入口 |
+| 有限时长在线监控 | `plc_monitor_window` 对已配置目标做有界、限速只读采样；批读不是 PLC 原子扫描快照 |
+| 通用 HMI 离线组态 | 校验变量绑定、报警、配方、多语言；在受控目录生成厂商中立 JSON/CSV 包及 SHA-256；**不能生成或下发 WinCC/GOT/NA 原生工程** |
+| 外部厂商 Worker 协议 | 已实现显式白名单进程的 JSON-RPC 握手/任务/超时/工件接口；未安装 TIA/GX/Sysmac/InoProShop 或具体厂商实现时均 Unsupported |
+| OPC UA/CIP/持续订阅 | 尚未实现客户端及订阅后端 |
+| 跨品牌工程编译、现场下载、RUN/STOP、Force、厂商原生 HMI/硬件组态 | **未实现**，无执行入口 |
 
 真实协议能力均为 `experimental`，没有连接或写入现场设备。不能用本机测试替代精确 CPU/固件/IDE 版本的台架验收。S7-200 SMART 的工程软件是 Micro/WIN SMART，不是 TIA Openness。本机只发现 MicroWIN SMART V2.8，未发现其他品牌 IDE；安装探测不等于授权、编译能力或实际设备兼容性。SMART 离线桥通过另行安装的 `smart200_mcp` Python 环境工作，该依赖与西门子 DLL 不随仓库发布。
 
@@ -93,6 +96,8 @@ dotnet D:\PLCMCP\src\PlcMcp.Server\bin\Release\net8.0\PlcMcp.Server.dll --config
 | plc_lint_program / plc_compare_projects | ST 启发式预检、PLCopen XML 文件比对（不是厂商编译） |
 | plc_get_audit / plc_get_job | 读取持久审计链和作业状态；坏审计日志会显式报错 |
 | plc_smart_inspect / plc_smart_validate | 仅在显式启用 SMART 工程目录且本机桥可用时出现；先建立工作副本，不连接 PLC |
+| plc_monitor_window | 有限窗口、限速只读采样；返回质量码、陈旧时间和变化摘要 |
+| plc_hmi_validate / plc_hmi_generate | 校验离线 manifest；生成通用 JSON/CSV 到受控工作区，不发布 HMI |
 
 stdin/stdout 每行一个 JSON 消息；日志仅 stderr。请先 initialize，再发送 initialized 通知。示例：
 

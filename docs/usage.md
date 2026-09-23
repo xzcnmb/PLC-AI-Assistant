@@ -118,8 +118,16 @@ dotnet src/PlcMcp.Server/bin/Release/net8.0/PlcMcp.Server.dll --config profiles/
 
 持久治理目前支持 `plc_get_job` / `plc_get_audit` 查询；审计哈希链坏损时显式拒绝读/追加，残缺尾行只能手工显式修复。模拟写入仍使用内存审计；外部企业身份提供方、持久审批消费和物理执行路径没有接线。
 
-## 8. 当前不能做的操作
+## 8. 有限只读监控与离线 HMI 组态
 
-跨品牌程序自动编译下载、硬件/HMI 组态、在线编辑、真实写参数、CPU RUN/STOP、强制 IO、OPC UA 安全会话和持续订阅均未完成。四协议参数写帧只在 localhost 回环测试，`canWrite` 对物理目标仍须 false。SMART 工程离线分析不代表现场程序下载能力。
+调用 `plc_monitor_window` 并传入 `targetId`、`tags`，可选 `intervalMs` (50～60000，真实目标最少 200)、`durationSeconds` (最多 600)、`maxSamples` (最多 100)。返回每次采样的质量码、时间、变化标记与摘要。服务绝不保证多个点位处于同一个 PLC 扫描周期，因此 `snapshotGuarantee` 始终为 `none`；这不是持续 SCADA 采集服务。
+
+HMI 组态输入是厂商中立 JSON manifest，文件必须放在已配置的 `--smart-project-root` 工程目录里（该选项在此也作为离线工程根目录）。`plc_hmi_validate` 将它与 MCP 目标的标签表比对；`plc_hmi_generate` 校验通过后，向 Server 的 `data/workspaces/hmi/<id>` 新目录输出 JSON/CSV 及 SHA-256。目标厂商必须与 HMI manifest 一致，不能用空 PLC 标签集合跳过绑定检查。它不是 WinCC/GOT/NA 原生工程，也不会发布至触摸屏。
+
+工程团队也可配置外部 JSON-RPC worker 的白名单可执行程序与工程工作区，代码库中已有 handshake/doctor/submit/status/artifacts/cancel 协议和进程超时/输出限制；但**当前仓库未包含 TIA/CODESYS/GX/Sysmac/InoProShop 的真实工程 worker**，没有软件和授权时返回 Unsupported。更多实现边界见 [架构设计](research-and-architecture.md)。
+
+## 9. 当前不能做的操作
+
+跨品牌程序自动编译下载、厂商原生硬件/HMI 组态、在线编辑、真实写参数、CPU RUN/STOP、强制 IO、OPC UA 安全会话和持续订阅均未完成。四协议参数写帧只在 localhost 回环测试，`canWrite` 对物理目标仍须 false。SMART 工程离线分析不代表现场程序下载能力。
 
 使用问题可在仓库提交 Issue，附软件版本、已脱敏配置、错误信息、复现步骤和期望行为。也欢迎加入 QQ 群 **462720530** 交流。
