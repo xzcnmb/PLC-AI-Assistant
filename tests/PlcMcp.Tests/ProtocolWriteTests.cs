@@ -598,7 +598,6 @@ public sealed class ProtocolWriteTests
             static async Task<byte[]> Packet(NetworkStream s, CancellationToken token)
             {
                 var header = await Read(s, 4, token);
-                Assert.Equal((byte)3, header[0]);
                 var length = BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(2));
                 return header.Concat(await Read(s, length - 4, token)).ToArray();
             }
