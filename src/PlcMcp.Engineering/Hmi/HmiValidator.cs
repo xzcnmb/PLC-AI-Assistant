@@ -447,8 +447,8 @@ public sealed class HmiValidator : IHmiValidator
             var translations = loc.Translations ?? new Dictionary<string, string>();
             if (!string.IsNullOrWhiteSpace(manifest.DefaultCulture))
             {
-                if (!translations.TryGetValue(manifest.DefaultCulture, out var defaultText) ||
-                    string.IsNullOrWhiteSpace(defaultText))
+                var defaultTranslation = translations.FirstOrDefault(x => string.Equals(x.Key, manifest.DefaultCulture, StringComparison.OrdinalIgnoreCase));
+                if (string.IsNullOrWhiteSpace(defaultTranslation.Key) || string.IsNullOrWhiteSpace(defaultTranslation.Value))
                 {
                     errors.Add(new HmiValidationError(
                         "VAL_LOC_DEFAULT_CULTURE_MISSING", "Localization", loc.Key,

@@ -172,6 +172,11 @@ public sealed class ExternalWorkerSecurityPolicy
         bool allowed = false;
         foreach (var root in AllowedWorkspaceRoots)
         {
+            if (IsBroadOrDangerousRoot(root, out string broadReason))
+            {
+                throw new UnauthorizedAccessException($"Allowlisted workspace root '{root}' is too broad: {broadReason}");
+            }
+
             string fullRoot = Path.GetFullPath(root);
             if (!fullRoot.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
             {
@@ -192,5 +197,155 @@ public sealed class ExternalWorkerSecurityPolicy
         }
 
         return fullPath;
+    }
+
+    /// <summary>
+    /// Checks whether a workspace root is overly broad (e.g. drive root, system folder, raw temp root, user root).
+    /// </summary>
+    public static bool IsBroadOrDangerousRoot(string path, out string reason)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            reason = "Workspace root cannot be null or empty.";
+            return true;
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception ex)
+        {
+            reason = $"Invalid path format: {ex.Message}";
+            return true;
+        }
+
+        string root = Path.GetPathRoot(fullPath)?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) ?? string.Empty;
+        if (string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase) || fullPath.Length <= 3)
+        {
+            reason = $"Root path '{fullPath}' is a filesystem or drive root, which is too broad.";
+            return true;
+        }
+
+        var dangerousFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void TryAdd(string? p)
+        {
+            if (!string.IsNullOrWhiteSpace(p))
+            {
+                try
+                {
+                    dangerousFolders.Add(Path.GetFullPath(p).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                }
+                catch { }
+            }
+        }
+
+        TryAdd(Environment.GetFolderPath(Environment.SpecialFolder.Windows));
+        TryAdd(Environment.GetFolderPath(Environment.SpecialFolder.System));
+        TryAdd(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles));
+        TryAdd(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86));
+        TryAdd(Path.GetTempPath());
+
+        string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(userProfile))
+        {
+            TryAdd(Path.GetDirectoryName(userProfile)); // e.g. C:\Users
+        }
+
+        if (dangerousFolders.Contains(fullPath))
+        {
+            reason = $"Path '{fullPath}' is a system, root, or broad temporary directory. A dedicated subdirectory must be specified.";
+            return true;
+        }
+
+        reason = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// Validates that a workspace root is not overly broad.
+    /// </summary>
+    public static void ValidateWorkspaceRoot(string root)
+    {
+        if (IsBroadOrDangerousRoot(root, out string reason))
+        {
+            throw new UnauthorizedAccessException($"Workspace root refused: {reason}");
+        }
+    }
+
+    /// <summary>
+    /// Validates that an artifact relative path is well-formed, does not escape the constrained working directory,
+    /// exists on disk, and matches the expected SHA-256 hash.
+    /// </summary>
+    public static string ValidateAndVerifyArtifact(
+        string constrainedWorkingDirectory,
+        WorkerArtifactDescriptor descriptor)
+    {
+        if (string.IsNullOrWhiteSpace(constrainedWorkingDirectory))
+        {
+            throw new ArgumentException("Constrained working directory cannot be empty.", nameof(constrainedWorkingDirectory));
+        }
+
+        if (descriptor == null)
+        {
+            throw new ArgumentNullException(nameof(descriptor));
+        }
+
+        if (string.IsNullOrWhiteSpace(descriptor.RelativePath))
+        {
+            throw new ArgumentException($"Artifact '{descriptor.Name}' has an empty or null relative path.");
+        }
+
+        if (string.IsNullOrWhiteSpace(descriptor.Sha256))
+        {
+            throw new ArgumentException($"Artifact '{descriptor.Name}' has an empty or null SHA-256 hash.");
+        }
+
+        string rawRel = descriptor.RelativePath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(rawRel))
+        {
+            throw new UnauthorizedAccessException($"Artifact path '{descriptor.RelativePath}' must be relative to the constrained workspace.");
+        }
+
+        foreach (char c in rawRel)
+        {
+            if (c < 0x20 && c != '\t')
+            {
+                throw new ArgumentException($"Artifact path contains illegal control character (code: {(int)c}).");
+            }
+        }
+
+        string fullWorkDir = Path.GetFullPath(constrainedWorkingDirectory);
+        if (!fullWorkDir.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+        {
+            fullWorkDir += Path.DirectorySeparatorChar;
+        }
+
+        string combinedPath = Path.GetFullPath(Path.Combine(fullWorkDir, rawRel));
+
+        if (!combinedPath.StartsWith(fullWorkDir, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnauthorizedAccessException($"Artifact path traversal detected: '{descriptor.RelativePath}' escapes constrained working directory '{constrainedWorkingDirectory}'.");
+        }
+
+        if (!File.Exists(combinedPath))
+        {
+            throw new FileNotFoundException($"Artifact file does not exist on disk at '{combinedPath}'.", combinedPath);
+        }
+
+        using var sha256 = SHA256.Create();
+        using var stream = File.OpenRead(combinedPath);
+        byte[] hashBytes = sha256.ComputeHash(stream);
+        string actualSha256 = Convert.ToHexString(hashBytes).ToLowerInvariant();
+        string expectedSha256 = descriptor.Sha256.Trim().ToLowerInvariant();
+
+        if (!string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Artifact '{descriptor.Name}' integrity check failed. Expected SHA-256: '{expectedSha256}', Actual: '{actualSha256}'.");
+        }
+
+        return combinedPath;
     }
 }

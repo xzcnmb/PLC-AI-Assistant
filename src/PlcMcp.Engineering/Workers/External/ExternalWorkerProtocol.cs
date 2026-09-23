@@ -61,7 +61,29 @@ public sealed record WorkerHandshakeResponse(
     [property: JsonPropertyName("bitness")] string Bitness,
     [property: JsonPropertyName("runtimeEnvironment")] string RuntimeEnvironment,
     [property: JsonPropertyName("capabilities")] IReadOnlyList<string> Capabilities,
-    [property: JsonPropertyName("capabilityEvidence")] IReadOnlyDictionary<string, string>? CapabilityEvidence = null);
+    [property: JsonPropertyName("capabilityEvidence")] IReadOnlyDictionary<string, string>? CapabilityEvidence = null)
+{
+    public bool MatchesExpectation(string? expectedName, string? expectedVersion, string? expectedProtocol, out string mismatchReason)
+    {
+        if (!string.IsNullOrWhiteSpace(expectedName) && !string.Equals(WorkerName, expectedName, StringComparison.Ordinal))
+        {
+            mismatchReason = $"WorkerName mismatch: expected '{expectedName}', actual '{WorkerName}'.";
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(expectedVersion) && !string.Equals(WorkerVersion, expectedVersion, StringComparison.Ordinal))
+        {
+            mismatchReason = $"WorkerVersion mismatch: expected '{expectedVersion}', actual '{WorkerVersion}'.";
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(expectedProtocol) && !string.Equals(ProtocolVersion, expectedProtocol, StringComparison.Ordinal))
+        {
+            mismatchReason = $"ProtocolVersion mismatch: expected '{expectedProtocol}', actual '{ProtocolVersion}'.";
+            return false;
+        }
+        mismatchReason = string.Empty;
+        return true;
+    }
+}
 
 /// <summary>
 /// Worker doctor diagnosis response.
@@ -112,3 +134,22 @@ public sealed record WorkerArtifactDescriptor(
 public sealed record WorkerArtifactsResponse(
     [property: JsonPropertyName("jobId")] string JobId,
     [property: JsonPropertyName("artifacts")] IReadOnlyList<WorkerArtifactDescriptor> Artifacts);
+
+/// <summary>
+/// Trust classification for execution results from external workers.
+/// External workers self-reporting completion can never be unconditionally promoted to Supported.
+/// </summary>
+public enum WorkerTrustLevel
+{
+    Untrusted,
+    Experimental,
+    Verified
+}
+
+/// <summary>
+/// Identity pinning expectation for external workers.
+/// </summary>
+public sealed record WorkerIdentityExpectation(
+    [property: JsonPropertyName("expectedWorkerName")] string? ExpectedWorkerName,
+    [property: JsonPropertyName("expectedWorkerVersion")] string? ExpectedWorkerVersion,
+    [property: JsonPropertyName("expectedProtocolVersion")] string? ExpectedProtocolVersion = "1.0");

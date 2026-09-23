@@ -16,6 +16,28 @@ public sealed class ExternalEngineeringWorkerConfig
     public List<string> AllowedWorkspaceRoots { get; set; } = new();
     public int TimeoutSeconds { get; set; } = 30;
     public long MaxOutputBytes { get; set; } = 10 * 1024 * 1024;
+
+    /// <summary>
+    /// Pinned expected worker name. If null, identity is unpinned and runs as Experimental or fails closed if RequirePinnedIdentity=true.
+    /// </summary>
+    public string? ExpectedWorkerName { get; set; }
+
+    /// <summary>
+    /// Pinned expected worker version.
+    /// </summary>
+    public string? ExpectedWorkerVersion { get; set; }
+
+    /// <summary>
+    /// Pinned expected protocol version (default "1.0").
+    /// </summary>
+    public string ExpectedProtocolVersion { get; set; } = "1.0";
+
+    /// <summary>
+    /// When true, unpinned identity or mismatched identity fails closed (Success=false).
+    /// If false, unpinned identity runs only as unverified/Experimental.
+    /// Defaults to false.
+    /// </summary>
+    public bool RequirePinnedIdentity { get; set; } = false;
 }
 
 /// <summary>
@@ -83,6 +105,7 @@ public sealed class ExternalEngineeringWorker : IEngineeringWorker
         {
             if (!string.IsNullOrWhiteSpace(r))
             {
+                ExternalWorkerSecurityPolicy.ValidateWorkspaceRoot(r);
                 _securityPolicy.AllowedWorkspaceRoots.Add(Path.GetFullPath(r));
             }
         }
@@ -167,6 +190,11 @@ public sealed class ExternalEngineeringWorker : IEngineeringWorker
         // 5. Create isolated read-only working copy for safety
         var snapshot = _workspaceManager.CreateWorkingCopy(sanitizedProjectPath, readOnly: true);
 
+        // Ensure the working copy directory is explicitly added to the security policy allowed workspace roots
+        // so that the external worker process and artifact verifications operate on the exact constrained workcopy directory.
+        string constrainedWorkDir = Path.GetDirectoryName(snapshot.WorkingPath) ?? snapshot.WorkingPath;
+        _securityPolicy.AllowedWorkspaceRoots.Add(Path.GetFullPath(constrainedWorkDir));
+
         // 6. Connect to external worker client
         await using var client = new ExternalWorkerClient(
             _config.ExecutablePath,
@@ -183,6 +211,35 @@ public sealed class ExternalEngineeringWorker : IEngineeringWorker
                 hostVersion: "1.0.0",
                 supportedVendors: new[] { Vendor.ToString(), _profileDetector.VendorName },
                 cancellationToken: cancellationToken);
+
+            // 7. Identity & Version pinning verification
+            bool hasPinnedIdentity = !string.IsNullOrWhiteSpace(_config.ExpectedWorkerName) ||
+                                     !string.IsNullOrWhiteSpace(_config.ExpectedWorkerVersion);
+
+            if (!hasPinnedIdentity)
+            {
+                if (_config.RequirePinnedIdentity)
+                {
+                    return new EngineeringExecutionResult(
+                        JobId: job.JobId,
+                        Success: false,
+                        Status: CapabilityStatus.Experimental,
+                        Message: "Worker identity is not pinned in configuration (fail-closed).",
+                        Details: "ExternalEngineeringWorker requires pinned ExpectedWorkerName and ExpectedWorkerVersion when RequirePinnedIdentity=true.");
+                }
+            }
+            else
+            {
+                if (!handshake.MatchesExpectation(_config.ExpectedWorkerName, _config.ExpectedWorkerVersion, _config.ExpectedProtocolVersion, out string mismatchReason))
+                {
+                    return new EngineeringExecutionResult(
+                        JobId: job.JobId,
+                        Success: false,
+                        Status: CapabilityStatus.Experimental,
+                        Message: $"Worker identity verification failed: {mismatchReason}",
+                        Details: $"Expected Name='{_config.ExpectedWorkerName}', Version='{_config.ExpectedWorkerVersion}', Protocol='{_config.ExpectedProtocolVersion}'. Actual: '{handshake.WorkerName}', '{handshake.WorkerVersion}', '{handshake.ProtocolVersion}'.");
+                }
+            }
 
             // Submit job with working copy path
             var submitReq = new WorkerSubmitJobRequest(
@@ -207,19 +264,70 @@ public sealed class ExternalEngineeringWorker : IEngineeringWorker
                 status = await client.GetStatusAsync(job.JobId, cancellationToken);
             }
 
+            bool reportedCompleted = string.Equals(status.State, "completed", StringComparison.OrdinalIgnoreCase);
+
             // Retrieve artifacts
             var artifactsResp = await client.GetArtifactsAsync(job.JobId, cancellationToken);
-            var artifactDict = artifactsResp.Artifacts.ToDictionary(a => a.Name, a => a.RelativePath);
 
-            bool success = string.Equals(status.State, "completed", StringComparison.OrdinalIgnoreCase);
+            // If operation is CompileProject, worker must produce at least one verifiable artifact.
+            // A fake worker merely reporting completed without any artifacts cannot claim compilation succeeded.
+            if (job.JobType == EngineeringJobType.CompileProject && reportedCompleted && (artifactsResp.Artifacts == null || artifactsResp.Artifacts.Count == 0))
+            {
+                return new EngineeringExecutionResult(
+                    JobId: job.JobId,
+                    Success: false,
+                    Status: CapabilityStatus.Experimental,
+                    Message: "Compilation failed: worker reported completion but produced no build artifacts.",
+                    Details: $"TrustLevel={WorkerTrustLevel.Untrusted}; Worker '{handshake.WorkerName}' reported state 'completed' with 0 artifacts for CompileProject.");
+            }
+
+            // Verify each artifact strictly:
+            // Must reside within the constrained workcopy directory, exist physically on disk, and match the declared SHA-256 hash.
+            var verifiedArtifactDict = new Dictionary<string, string>();
+            if (artifactsResp.Artifacts != null && artifactsResp.Artifacts.Count > 0)
+            {
+                foreach (var art in artifactsResp.Artifacts)
+                {
+                    try
+                    {
+                        string verifiedPath = ExternalWorkerSecurityPolicy.ValidateAndVerifyArtifact(constrainedWorkDir, art);
+                        verifiedArtifactDict[art.Name] = verifiedPath;
+                    }
+                    catch (Exception ex)
+                    {
+                        return new EngineeringExecutionResult(
+                            JobId: job.JobId,
+                            Success: false,
+                            Status: CapabilityStatus.Experimental,
+                            Message: $"Artifact validation failed for '{art.Name}': {ex.Message}",
+                            Details: $"TrustLevel={WorkerTrustLevel.Untrusted}; Artifact path: '{art.RelativePath}', SHA: '{art.Sha256}'.");
+                    }
+                }
+            }
+
+            if (!reportedCompleted)
+            {
+                return new EngineeringExecutionResult(
+                    JobId: job.JobId,
+                    Success: false,
+                    Status: CapabilityStatus.Experimental,
+                    Message: status.Message ?? $"Operation failed with state '{status.State}'.",
+                    Details: $"TrustLevel={WorkerTrustLevel.Untrusted}; Worker: {handshake.WorkerName} {handshake.WorkerVersion} ({handshake.Bitness}). ExitCode: {client.ExitCode}. Stderr: {client.StderrTail.Trim()}");
+            }
+
+            // Trust calibration:
+            // Self-reported completed from an external worker can NEVER be promoted to Supported.
+            // Even when valid artifacts are verified, it remains at CapabilityStatus.Experimental.
+            var trustLevel = hasPinnedIdentity ? WorkerTrustLevel.Experimental : WorkerTrustLevel.Untrusted;
+            var finalStatus = CapabilityStatus.Experimental;
 
             return new EngineeringExecutionResult(
                 JobId: job.JobId,
-                Success: success,
-                Status: success ? CapabilityStatus.Supported : CapabilityStatus.Experimental,
-                Message: status.Message ?? (success ? "Operation completed successfully." : $"Operation failed with state '{status.State}'."),
-                ExportedOutputs: artifactDict,
-                Details: $"Worker: {handshake.WorkerName} {handshake.WorkerVersion} ({handshake.Bitness}). ExitCode: {client.ExitCode}. Stderr: {client.StderrTail.Trim()}");
+                Success: true,
+                Status: finalStatus,
+                Message: status.Message ?? "Operation completed successfully (External worker, Experimental status).",
+                ExportedOutputs: verifiedArtifactDict,
+                Details: $"TrustLevel={trustLevel}; Worker: {handshake.WorkerName} {handshake.WorkerVersion} ({handshake.Bitness}). ExitCode: {client.ExitCode}. Stderr: {client.StderrTail.Trim()}");
         }
         catch (Exception ex)
         {
