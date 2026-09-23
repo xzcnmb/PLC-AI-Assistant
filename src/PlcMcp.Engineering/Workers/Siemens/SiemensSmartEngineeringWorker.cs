@@ -624,7 +624,7 @@ public sealed class SiemensSmartEngineeringWorker : IEngineeringWorker
                                 Code: "SMART_VALIDATE_INVALID_TYPE",
                                 Message: $"POU '{bName}' invalid field is not an array (type: {invArr.ValueKind}).",
                                 Severity: DiagnosticSeverity.Error,
-                                _line: 1, // Line
+                                Line: 1,
                                 Column: 1,
                                 RuleName: "Siemens.MicroWinSmart.POU_IsValidNet"));
                         }
