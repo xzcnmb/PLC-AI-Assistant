@@ -306,7 +306,7 @@ public class ExternalWorkerTests : IDisposable
                     id = id,
                     result = new WorkerHandshakeResponse(
                         WorkerName: "Fake-Codesys-Worker",
-                        WorkerVersion: "3.5.19.0",
+                        WorkerVersion: "1.0.0",
                         ProtocolVersion: "1.0",
                         Vendor: "CODESYS",
                         Bitness: "64-bit",
@@ -796,7 +796,9 @@ for line in sys.stdin:
     [Fact]
     public async Task ExternalEngineeringWorker_WhenToolchainNotInstalled_ReturnsUnsupported()
     {
-        var realDetector = new CodesysProfileDetector();
+        // Use an explicitly uninstalled detector: on this host CODESYS may genuinely be
+        // present, and a real detector would then correctly report Installed.
+        var missingDetector = new FakeMissingDetector(PlcVendor.Generic, "CODESYS", "CODESYS Development System V3");
         var wsManager = new ProjectWorkspaceManager(_tempWorkspace);
         string dummyProj = Path.Combine(_tempWorkspace, "demo.project");
         File.WriteAllText(dummyProj, "TEST");
@@ -812,7 +814,7 @@ for line in sys.stdin:
             PlcVendor.Generic,
             "RealCodesysWorker",
             config,
-            realDetector,
+            missingDetector,
             wsManager);
 
         var job = new EngineeringJobRequest(
@@ -1263,6 +1265,31 @@ for line in sys.stdin:
             }
         }
         return null;
+    }
+
+    private sealed class FakeMissingDetector : IVendorProfileDetector
+    {
+        public PlcVendor Vendor { get; }
+        public string VendorName { get; }
+        public string ToolchainName { get; }
+
+        public FakeMissingDetector(PlcVendor vendor, string vendorName, string toolchainName)
+        {
+            Vendor = vendor;
+            VendorName = vendorName;
+            ToolchainName = toolchainName;
+        }
+
+        public ExternalVendorProfile DetectProfile() => new(
+            Vendor,
+            VendorName,
+            ToolchainName,
+            Installed: false,
+            ExecutablePath: null,
+            Version: null,
+            Bitness: null,
+            Capabilities: new CapabilitySet(new List<CapabilityDescriptor>()),
+            Details: "CODESYS is not installed or detected in this isolated test.");
     }
 
     private sealed class FakeInstalledDetector : IVendorProfileDetector

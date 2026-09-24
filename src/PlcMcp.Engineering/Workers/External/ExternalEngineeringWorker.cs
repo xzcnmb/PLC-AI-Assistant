@@ -12,10 +12,19 @@ public sealed class ExternalEngineeringWorkerConfig
 {
     public string ExecutablePath { get; set; } = string.Empty;
     public List<string> Arguments { get; set; } = new();
+    public string? RawArguments { get; set; }
+    public bool GracefulShutdown { get; set; }
     public List<string> AllowedExecutablePaths { get; set; } = new();
     public List<string> AllowedWorkspaceRoots { get; set; } = new();
     public int TimeoutSeconds { get; set; } = 30;
     public long MaxOutputBytes { get; set; } = 10 * 1024 * 1024;
+
+    /// <summary>
+    /// Controls attributes on the isolated working copy. Offline vendor builds may need
+    /// to create intermediate files, but the original source remains protected and is
+    /// verified byte-for-byte after the worker exits.
+    /// </summary>
+    public bool WorkingCopyReadOnly { get; set; } = true;
 
     /// <summary>
     /// Pinned expected worker name. If null, identity is unpinned and runs as Experimental or fails closed if RequirePinnedIdentity=true.
@@ -187,8 +196,10 @@ public sealed class ExternalEngineeringWorker : IEngineeringWorker
                 Message: $"Project file does not exist: '{sanitizedProjectPath}'");
         }
 
-        // 5. Create isolated read-only working copy for safety
-        var snapshot = _workspaceManager.CreateWorkingCopy(sanitizedProjectPath, readOnly: true);
+        // 5. Create isolated working copy for safety. The vendor process never receives
+        // the original path; read-only remains the default, while explicitly configured
+        // offline build workers may write only inside this disposable copy.
+        var snapshot = _workspaceManager.CreateWorkingCopy(sanitizedProjectPath, readOnly: _config.WorkingCopyReadOnly);
 
         // Ensure the working copy directory is explicitly added to the security policy allowed workspace roots
         // so that the external worker process and artifact verifications operate on the exact constrained workcopy directory.
@@ -200,7 +211,9 @@ public sealed class ExternalEngineeringWorker : IEngineeringWorker
             _config.ExecutablePath,
             _config.Arguments,
             _securityPolicy,
-            _processRunner);
+            _processRunner,
+            _config.RawArguments,
+            _config.GracefulShutdown);
 
         try
         {
@@ -210,7 +223,7 @@ public sealed class ExternalEngineeringWorker : IEngineeringWorker
             var handshake = await client.HandshakeAsync(
                 hostVersion: "1.0.0",
                 supportedVendors: new[] { Vendor.ToString(), _profileDetector.VendorName },
-                cancellationToken: cancellationToken);
+                cancellationToken: default);
 
             // 7. Identity & Version pinning verification
             bool hasPinnedIdentity = !string.IsNullOrWhiteSpace(_config.ExpectedWorkerName) ||

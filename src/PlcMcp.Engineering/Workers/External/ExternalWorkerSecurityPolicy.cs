@@ -40,8 +40,8 @@ public sealed class ExternalWorkerSecurityPolicy
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// Maximum allowed overall lifetime of an external worker process before forceful kill.
-    /// Default: 300 seconds.
+    /// Maximum external process lifetime. A dedicated ScriptEngine process may
+    /// live across several JSON-RPC calls but must always be bounded.
     /// </summary>
     public TimeSpan MaxProcessLifetime { get; set; } = TimeSpan.FromSeconds(300);
 
@@ -114,6 +114,31 @@ public sealed class ExternalWorkerSecurityPolicy
 
         rejectionReason = string.Empty;
         return false;
+    }
+
+    /// <summary>
+    /// Validates a raw command-line argument string used only for vendor parsers that
+    /// require embedded quotes (for example, CODESYS --profile="name with spaces").
+    /// Shell execution remains disabled; control characters and shell metacharacters are
+    /// refused to prevent accidental command construction from untrusted values.
+    /// </summary>
+    public static void ValidateRawArguments(string rawArguments)
+    {
+        if (string.IsNullOrWhiteSpace(rawArguments))
+            throw new ArgumentException("Raw arguments cannot be empty.", nameof(rawArguments));
+        if (rawArguments.Length > 8192)
+            throw new ArgumentException("Raw arguments exceed the 8192-character limit.", nameof(rawArguments));
+
+        bool insideQuote = false;
+        foreach (char c in rawArguments)
+        {
+            if (char.IsControl(c) || c is '&' or '|' or '<' or '>' or '^' or '%')
+                throw new ArgumentException($"Raw arguments contain a prohibited character (U+{(int)c:X4}).", nameof(rawArguments));
+            if (c == '"') insideQuote = !insideQuote;
+        }
+
+        if (insideQuote)
+            throw new ArgumentException("Raw arguments contain an unmatched quote.", nameof(rawArguments));
     }
 
     /// <summary>

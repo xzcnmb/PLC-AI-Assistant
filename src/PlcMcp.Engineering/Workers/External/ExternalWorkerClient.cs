@@ -96,6 +96,7 @@ public sealed class ExternalWorkerClient : IAsyncDisposable
 {
     private readonly string _executablePath;
     private readonly IReadOnlyList<string> _arguments;
+    private readonly string? _rawArguments;
     private readonly ExternalWorkerSecurityPolicy _securityPolicy;
     private readonly IProcessRunner _processRunner;
 
@@ -109,6 +110,7 @@ public sealed class ExternalWorkerClient : IAsyncDisposable
     private readonly CancellationTokenSource _lifetimeCts = new();
     private int _requestIdCounter;
     private bool _isDisposed;
+    private readonly bool _gracefulShutdown;
 
     public WorkerHandshakeResponse? HandshakeData { get; private set; }
     public string StderrTail => GetStderrTail();
@@ -119,10 +121,14 @@ public sealed class ExternalWorkerClient : IAsyncDisposable
         string executablePath,
         IReadOnlyList<string>? arguments = null,
         ExternalWorkerSecurityPolicy? securityPolicy = null,
-        IProcessRunner? processRunner = null)
+        IProcessRunner? processRunner = null,
+        string? rawArguments = null,
+        bool gracefulShutdown = false)
     {
         _executablePath = executablePath ?? throw new ArgumentNullException(nameof(executablePath));
         _arguments = arguments ?? Array.Empty<string>();
+        _rawArguments = rawArguments;
+        _gracefulShutdown = gracefulShutdown;
         _securityPolicy = securityPolicy ?? new ExternalWorkerSecurityPolicy();
         _processRunner = processRunner ?? new DefaultProcessRunner();
     }
@@ -151,9 +157,21 @@ public sealed class ExternalWorkerClient : IAsyncDisposable
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        foreach (var arg in _arguments)
+        if (!string.IsNullOrWhiteSpace(_rawArguments))
         {
-            startInfo.ArgumentList.Add(arg);
+            // Legacy vendor command lines (e.g. CODESYS --profile) require the raw string
+            // to be preserved verbatim; ArgumentList would strip the embedded quotes.
+            if (_arguments.Count != 0)
+                throw new InvalidOperationException("RawArguments and Arguments cannot be configured together.");
+            ExternalWorkerSecurityPolicy.ValidateRawArguments(_rawArguments);
+            startInfo.Arguments = _rawArguments;
+        }
+        else
+        {
+            foreach (var arg in _arguments)
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
         }
 
         // 3. Start process
@@ -457,6 +475,23 @@ public sealed class ExternalWorkerClient : IAsyncDisposable
     {
         if (_isDisposed) return;
         _isDisposed = true;
+
+        // Ask a well-behaved worker to exit cleanly before we cancel the lifetime token.
+        if (_gracefulShutdown && _process != null && !_process.HasExited)
+        {
+            try
+            {
+                await _process.StandardInput.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"id\":\"shutdown\",\"method\":\"shutdown\",\"params\":{}}")
+                    .ConfigureAwait(false);
+                await _process.StandardInput.FlushAsync().ConfigureAwait(false);
+                using var exitWait = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await _process.WaitForExitAsync(exitWait.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Shutdown is best-effort; the host still kills the process tree below.
+            }
+        }
 
         _lifetimeCts.Cancel();
 
