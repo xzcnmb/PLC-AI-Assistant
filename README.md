@@ -1,46 +1,98 @@
 # PLC-AI-Assistant
 
-**面向西门子、欧姆龙、三菱、汇川等 PLC 的 AI 工程助手与 MCP 服务框架。**
+面向西门子、欧姆龙、三菱、汇川等工业 PLC 的 MCP 工程助手框架。
 
-让支持 MCP 的 AI 客户端通过统一接口查询控制器能力、浏览变量、读取数据，并在模拟环境中验证变更计划。长期目标是接入厂商工程软件，覆盖程序编写、编译、调试、下载、硬件与 HMI 组态。
+项目提供统一的 MCP stdio 接口、协议只读适配器、模拟变更治理、工程工作副本、审计与厂商软件诊断。厂商工程软件接入坚持证据驱动：本机安装、版本、位数、进程握手、退出码、输出工件和 SHA-256 都必须可核对；接口名称或 DLL 存在本身不会被当作可用能力。
 
-当前版本仍属**开发中原型**：四协议只读通信与模拟写入之外，新增了四协议参数写帧（**仅协议层/localhost 验证，物理写入口仍禁用**）、限速只读监控、安全的工程文件副本、ST 启发式预检、PLCopen XML 解析、厂商软件 doctor、HMI 离线组态校验/厂商中立产物、持久审计/作业与可选 MicroWIN SMART 离线工程桥。真实 PLC 下载、RUN/STOP、强制、厂商原生 HMI/硬件组态和跨品牌工程编译仍未完成，不能替代完整的 PLC 工程与现场验收流程。
+QQ群：**462720530**
 
-**QQ 交流群：462720530** — 欢迎交流 PLC 与 AI/MCP 集成、多品牌协议适配、工程自动化和使用反馈。反馈现场问题时请脱敏工程文件、网络地址与设备凭据。
+仓库：<https://github.com/xzcnmb/PLC-AI-Assistant>
 
-项目仓库：<https://github.com/xzcnmb/PLC-AI-Assistant>
+[使用说明](docs/usage.md) · [调研与架构](docs/research-and-architecture.md) · [开发契约](docs/contracts.md) · [厂商接入计划](docs/vendor-integration-plan.md)
 
-[快速开始与使用说明](docs/usage.md) · [调研与设计](docs/research-and-architecture.md) · [开发契约](docs/contracts.md)
+## 当前验证结果
 
-调研、品牌差异和后续工程方案见 [调研与架构决策](docs/research-and-architecture.md)，目录责任和接口规则见 [契约边界](docs/contracts.md)。
+| 能力 | 当前状态 | 实际证据 |
+|---|---|---|
+| MCP stdio | 已验证 | initialize、ping、tools/list、tools/call、notification 静默处理；日志只写 stderr |
+| S7comm/FINS/SLMP/Modbus TCP 只读 | Experimental | localhost 回环、帧结构和异常路径已测试；真实 CPU/固件仍需台架验证 |
+| 参数写帧 | Experimental（协议层） | localhost 帧构造/响应测试；物理 Runtime 与 MCP 写入口保持关闭 |
+| 模拟写入 | 已验证（模拟目标） | 类型/范围、状态哈希、一次性计划 token、进程内锁；不接触 PLC |
+| SMART 工程桥 | Experimental | MicroWIN SMART V2 工作副本分析与网络验证；不连接 PLC，不处理 TIA Openness |
+| CODESYS ScriptEngine | Experimental（离线工程） | 本机 CODESYS 3.5.22.30 / SP22 Patch 3 / ScriptEngine 4.2.0.0 真实 handshake、doctor、shutdown 通过；工程操作只在工作副本，结果最高 Experimental |
+| Mitsubishi GX Works3 | Verified（P0 诊断） | GXW3.exe 1.128.0.1、PE x86、.NET Framework 4.8 x86 独立 metadata worker handshake/doctor/shutdown 通过；工程 API/ServiceBus 未初始化 |
+| Omron Sysmac/CX | Verified（P0 诊断） | Sysmac Studio 1.60.0.64010、CX-Server 5.1.1.4 静态文件/版本/PE/哈希/COM 注册表观察；不激活 COM、不启动 IDE |
+| Omron IEC/PLCopen XML、AutomationML | Experimental（结构解析） | 受限工作目录、4 MiB/节点/深度上限、DTD/XXE 防护、结构枚举、稳定比较与扩展 hash；不是 Sysmac 编译器 |
+| 跨品牌编译/下载/RUN-STOP/Force/在线写入 | Unsupported | 没有可执行入口；危险能力在 Runtime/Worker 层硬拒绝 |
 
-## 当前实际能力
+## 已验证的三菱诊断链
 
-| 功能 | 状态与证据 |
-|---|---|
-| MCP stdio | 支持 initialize、ping、tools/list、tools/call；协议基线 2024-11-05 |
-| 四品牌内存目标 | Siemens/Omron/Mitsubishi/Inovance 标签示例，值标记 simulated；不执行 PLC 程序 |
-| S7comm 读取 | S7netplus 0.20.0，SMART V→DB1、DB/M/I/Q；localhost 协商和读取已测，真机待验 |
-| FINS/TCP 读取 | 节点协商、DM/CIO/W/H/A 字/位读取；localhost 已测，真机待验 |
-| SLMP 3E binary 读取 | D/R/W 字与 M/X/Y/B 位；localhost 已测，真机待验 |
-| Modbus TCP 读取 | HR/IR 数值、C/DI 位，零基地址；localhost 读取/异常/分段/超时已测 |
-| 四协议参数写帧 | 写帧/响应/超时在 localhost 测试；**未接入物理 Runtime 与 MCP，真实目标不可写** |
-| 符号浏览 | 读取配置 manifest，支持中英文别名；不是从 PLC 自动上传符号 |
-| 模拟写入 | 范围/类型、一次性计划、状态哈希、执行前意图日志；仅影响内存 |
-| 工程离线工具 | `plc_doctor`、ST 预检、PLCopen XML 比对、隔离工作副本；不是厂商编译 |
-| SMART 本机工程桥 | `--smart-project-root` 明确授权后可离线检查 V2、验证网络；需要本机 MicroWIN SMART 及可选 smart200_mcp，不连接 PLC |
-| 治理基座 | 审计哈希链、作业崩溃隔离、目标租约、外部审批契约；真实物理动作尚未接线 |
-| 有限时长在线监控 | `plc_monitor_window` 对已配置目标做有界、限速只读采样；批读不是 PLC 原子扫描快照 |
-| 通用 HMI 离线组态 | 校验变量绑定、报警、配方、多语言；在受控目录生成厂商中立 JSON/CSV 包及 SHA-256；**不能生成或下发 WinCC/GOT/NA 原生工程** |
-| 外部厂商 Worker 协议 | 已实现显式白名单进程的 JSON-RPC 握手/任务/超时/工件接口；未安装 TIA/GX/Sysmac/InoProShop 或具体厂商实现时均 Unsupported |
-| OPC UA/CIP/持续订阅 | 尚未实现客户端及订阅后端 |
-| 跨品牌工程编译、现场下载、RUN/STOP、Force、厂商原生 HMI/硬件组态 | **未实现**，无执行入口 |
+GX Works3 的主程序是本机 32 位程序：
 
-真实协议能力均为 `experimental`，没有连接或写入现场设备。不能用本机测试替代精确 CPU/固件/IDE 版本的台架验收。S7-200 SMART 的工程软件是 Micro/WIN SMART，不是 TIA Openness。本机只发现 MicroWIN SMART V2.8，未发现其他品牌 IDE；安装探测不等于授权、编译能力或实际设备兼容性。SMART 离线桥通过另行安装的 `smart200_mcp` Python 环境工作，该依赖与西门子 DLL 不随仓库发布。
+```text
+D:\gwork2\GPPW3\GXW3.exe
+FileVersion: 1.128.0.1
+PE machine: 0x014c (x86)
+```
 
-## 构建和启动
+独立探针位于 `src/PlcMcp.GxWorks3.Worker`，目标是 .NET Framework 4.8 x86。它只做静态元数据诊断：读取 GXW3.exe、完整 `Service\Service.config` 和有限的厂商程序集元数据；XML 解析禁用 DTD 和外部实体，ReflectionOnly 读取不执行厂商代码。真实本机测试顺序为：
 
-项目目标框架 net8.0；本机使用 SDK 10.0.401 和 .NET 8 运行时验证。`.slnx` 需要支持该格式的 SDK（本机为 10）。SDK 8 可直接构建 Server 和 Tests 的 csproj。运行依赖 S7netplus，测试依赖 xUnit。
+```text
+handshake -> doctor -> shutdown
+```
+
+退出码为 0，stdout 只有 JSON-RPC，stderr 只有诊断日志，报告中的 `engineeringApiVerified` 保持 `false`。它不会启动 GXW3.exe，不加载 ServiceBus，不打开工程，不连接 PLC。
+
+主 MCP 进程通过下面的成组参数启用唯一的三菱工具 `plc_gxworks3_doctor`：
+
+```cmd
+dotnet PlcMcp.Server.dll ^
+  --gxworks3-probe D:\PLCMCP\src\PlcMcp.GxWorks3.Worker\bin\Release\net48\PlcMcp.GxWorks3.Worker.exe ^
+  --gxworks3-probe-sha256 <探针exe的SHA-256> ^
+  --gxworks3-exe D:\gwork2\GPPW3\GXW3.exe ^
+  --gxworks3-version 1.128.0.1
+```
+
+四个参数必须同时出现、每个只能出现一次、路径必须是绝对路径，探针 exe 启动前会再次做 SHA-256 校验。没有完整配置时，三菱工具不会注册。`plc_gxworks3_inspect/export/compile` 当前不会注册，因为 GX Works3 内部 ServiceBus 和工程服务还没有被证明可以从独立进程安全初始化。
+
+## 已验证的 CODESYS 离线链
+
+本机 CODESYS 版本为 3.5.22.30 / SP22 Patch 3 / x64，官方脚本引擎为 IronPython 2.7。旧版命令行解析器要求保留引号，不能把参数拆成 .NET `ArgumentList`：
+
+```text
+CODESYS.exe --noUI --noConsole --skipProjectRecovery --skipUnlicensedPlugins --profile="CODESYS V3.5 SP22 Patch 3" --runscript="D:\PLCMCP\scripts\codesys_worker.py"
+```
+
+`codesys_worker.py` 在 CODESYS 进程内通过 stdin/stdout 行 JSON-RPC 提供 `handshake`、`doctor`、`submit`、`status`、`artifacts`、`cancel`、`shutdown`。真实测试确认 `projects/system/online` 全局对象存在；Worker 不调用 ScriptOnline。支持的离线语义为工作副本 inspect、PLCopen XML export、build/clean/rebuild；所有结果要求工件存在并通过 SHA-256 校验，状态最高为 Experimental。
+
+启用 CODESYS 需要同时提供 `--codesys-exe`、`--codesys-profile`、`--codesys-version`、`--codesys-script`、`--codesys-script-sha256`、`--codesys-project-root`。doctor 通过后才注册 `plc_codesys_inspect`、`plc_codesys_export`、`plc_codesys_compile`；`plc_codesys_doctor` 用于只读证据检查。login、logout、start、stop、reset、force、download、upload、save、import、delete、move 和所有 PLC 在线操作在宿主与脚本双层拒绝。
+
+## 已验证的欧姆龙离线链
+
+本机已安装 Sysmac Studio 1.60.0.64010 与 CX-Server 5.1.1.4。`plc_omron_doctor` 只读取安装文件、FileVersionInfo、真实 PE 位数、SHA-256、32/64 位注册表视图和 COM 注册信息；不会调用 `Type.GetTypeFromProgID`，不会实例化 COM，不启动 Sysmac/CX-Server，不连接 PLC。
+
+在配置了受限 `--smart-project-root` 后，主 MCP 还注册两个标准交换文件工具：
+
+- `plc_omron_exchange_inspect`：读取 IEC 61131-10/PLCopen XML 或 AutomationML CAEX，输出项目/POU/变量/类型/设备结构和 source SHA-256。
+- `plc_omron_exchange_compare`：对两个受限文件做稳定排序的结构差异与原始扩展 hash 比较。
+
+该解析器限制文件 4 MiB、XML 深度 64、节点 50,000，禁用 DTD/外部实体和网络 schema，不导入工程，不调用私有 Sysmac API。输出 `validationLevel=structural`、`isVendorCompiler=false`。ACE、nexcc、SysmacDiff、NEX online、CX-Server 在线通信、下载、写变量、RUN/STOP、Force、Raw CGI、密码和任意脚本执行全部保持 Unsupported。
+
+## MCP 工具概览
+
+常用工具：
+
+- `plc_list_targets`、`plc_get_capabilities`、`plc_list_tags`、`plc_browse_symbols`
+- `plc_probe_target`、`plc_read_tags`
+- `plc_plan_write`、`plc_apply_write`（仅模拟目标）
+- `plc_doctor`、`plc_get_capabilities_report`、`plc_get_audit`
+- `plc_lint_program`、`plc_compare_projects`、`plc_monitor_window`
+- `plc_hmi_validate`、`plc_hmi_generate`
+- 条件注册：`plc_smart_inspect`、`plc_smart_validate`、`plc_codesys_*`、`plc_gxworks3_doctor`、`plc_omron_doctor`、`plc_omron_exchange_*`
+
+条件工具只在对应路径、版本、哈希、工作根和 doctor 门禁满足时出现。工具 annotations 只是客户端提示，真正的拒绝规则在 Worker、Runtime 和安全策略层。
+
+## 构建、测试和启动
 
 ```cmd
 dotnet build D:\PLCMCP\PlcMcp.slnx -c Release
@@ -48,80 +100,17 @@ dotnet test D:\PLCMCP\PlcMcp.slnx -c Release
 dotnet D:\PLCMCP\src\PlcMcp.Server\bin\Release\net8.0\PlcMcp.Server.dll
 ```
 
-无参数只加载 `sim-siemens`、`sim-omron`、`sim-mitsubishi`、`sim-inovance`，不创建任何 PLC 网络连接。启动 DLL 避免 `dotnet run` 的构建输出进入 MCP stdout。
+本次最终 Release 验收：
 
-MCP 客户端配置示例（只作示例，不会自动修改客户端设置）：
+- `PlcMcp.Tests`: 245 passed
+- `PlcMcp.Engineering.Tests`: 174 passed
+- 总计：419 passed，0 failed，0 skipped
+- Framework GX probe 在本机真实 GX Works3 安装上 handshake/doctor/shutdown 通过
+- CODESYS ScriptEngine 在本机真实安装上 handshake/doctor/shutdown 通过
+- 未启动 Sysmac Studio、GX Works3 主界面、CX-Server COM 或任何 PLC 连接
 
-```json
-{
-  "mcpServers": {
-    "plc-mcp": {
-      "command": "dotnet",
-      "args": ["D:\\PLCMCP\\src\\PlcMcp.Server\\bin\\Release\\net8.0\\PlcMcp.Server.dll"]
-    }
-  }
-}
-```
+无参数启动只加载模拟目标和基础 MCP 工具，不建立 PLC 网络连接。配置错误会直接退出，不静默回退到模拟目标。反馈问题时请脱敏工程文件、IP、凭据和客户项目内容。
 
-## 显式配置只读目标
+## 仍然明确不支持
 
-[配置样例](profiles/readonly.example.json) 使用文档保留地址，启动时不会连接。先换成实际目标、经过核对的地址和字节序，再由明确的 `probe/read` 工具调用建立连接：
-
-```cmd
-dotnet D:\PLCMCP\src\PlcMcp.Server\bin\Release\net8.0\PlcMcp.Server.dll --config D:\PLCMCP\profiles\readonly.example.json
-```
-
-配置模式替换默认模拟目标；物理目标写工具不注册。错误配置直接退出，禁止静默回退为模拟。所有物理标签 `canWrite` 必须为 false。不根据配置里的品牌名猜测协议或字节序。
-
-- S7：准确指定 family、rack、slot；支持 SMART 的 V 地址映射，优化 DB/S7comm-plus 不支持。
-- FINS：仅本地网络 TCP，32/64 位变量显式设置 byteOrder；没有 UDP、EM bank 或跨网路由配置。
-- SLMP：仅 binary 3E、本地站；X/Y/W/B 号码按十六进制，D/R/M 按十进制；端口由工程配置决定。
-- Modbus：`HR100` 是零基保持寄存器 100，`IR100` 输入寄存器，`C100` 线圈，`DI100` 离散输入；不会把汇川 MW/D 地址自动换算。32/64 位值要求 byteOrder。
-- byteOrder：BigEndian/ABCD、LittleEndian/DCBA、WordSwap/CDAB、ByteSwap/BADC；按工程数据定义核对。
-
-每批最多 128 个标签；单次网络读超时 100～30000 ms，默认 3000 ms，超时关闭该连接，不自动重复写或重复提交。当前每批重建连接、逐标签读取，多点不是一致扫描快照，尚未实现连接池、PDU 批量合并或速率调节。
-
-## MCP 工具
-
-| 工具 | 输入/作用 |
-|---|---|
-| plc_list_targets | 列出本实例加载的目标和能力 |
-| plc_get_capabilities | 可选 targetId；目标的能力状态是实际后端状态 |
-| plc_list_tags / plc_browse_symbols | targetId、可选 filter；manifest 符号及别名 |
-| plc_probe_target | targetId；S7 协商或 TCP 可达性，不冒充 CPU 模式/身份 |
-| plc_read_tags | targetId、tags；返回类型、单位、质量、时间 |
-| plc_plan_write | **模拟模式** targetId、changes、可选 lifetimeMinutes（最多 5） |
-| plc_apply_write | **模拟模式** planId、approvalToken，同一进程内消费 |
-| plc_doctor / plc_get_capabilities_report | 只读扫描本机软件版本与能力证据（不连接 PLC） |
-| plc_lint_program / plc_compare_projects | ST 启发式预检、PLCopen XML 文件比对（不是厂商编译） |
-| plc_get_audit / plc_get_job | 读取持久审计链和作业状态；坏审计日志会显式报错 |
-| plc_smart_inspect / plc_smart_validate | 仅在显式启用 SMART 工程目录且本机桥可用时出现；先建立工作副本，不连接 PLC |
-| plc_monitor_window | 有限窗口、限速只读采样；返回质量码、陈旧时间和变化摘要 |
-| plc_hmi_validate / plc_hmi_generate | 校验离线 manifest；生成通用 JSON/CSV 到受控工作区，不发布 HMI |
-
-stdin/stdout 每行一个 JSON 消息；日志仅 stderr。请先 initialize，再发送 initialized 通知。示例：
-
-```jsonl
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"example","version":"1"}}}
-{"jsonrpc":"2.0","method":"notifications/initialized"}
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"plc_read_tags","arguments":{"targetId":"sim-siemens","tags":["目标压力","RunMode"]}}}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"plc_plan_write","arguments":{"targetId":"sim-siemens","changes":{"目标压力":"4.5"}}}}
-```
-
-工具响应为 `result.content:[{type:"text",text:"<JSON payload>"}]`、`result.isError`。v0.1 同时保留顶层领域字段以兼容现有调用；两份数据不是两次执行。工具 annotations 是客户端提示，真正拒绝规则在 Runtime/adapter 内。
-
-## 模拟计划的准确语义
-
-规划不改变标签。标签名和别名归一化，同一标签重复出现会拒绝。数值先转换为 PLC 类型再检查 min/max，null、NaN、Infinity、非法类型和小数截断被拒绝。目标级锁避免同一实例的调用交错，应用前重新比较被修改标签的状态哈希。
-
-`approvalToken` 是模拟计划消费 token，**不构成人工身份认证或人工审批证明**。计划最长 5 分钟；正确或错误 token 的一次尝试都会消费计划。状态变化、过期或重复使用会失败，需重新规划。不会授予生产权限。
-
-每项写入前记录 `write_intent`，成功后记录 `write_tag`。逐标签执行不保证整批原子提交；失败返回已完成的 Values 和数量，无自动回滚。模拟写入沿用内存计划与内存审计，进程退出后丢失；新建的 `FileAuditLog` 与 `FileJobStateMachine` 供工程作业治理使用，已做坏链拒绝追加和崩溃作业隔离，但尚未接管模拟写入的审计。SHA-256 哈希链没有外部锚点，不能防止掌握整个文件写入权限者重写历史。Physical write、force、RUN/STOP 和工程下载没有可执行路径。SMART 工程 worker 可以在独立工作副本调用本机编译器做验证，但此能力不等同跨品牌编译。
-
-## 测试与局限
-
-`tests/PlcMcp.Tests` 包含类型/范围、别名、状态漂移、MCP notification/annotations、协议固定帧与 loopback TCP 测试。所有 TCP 测试仅监听 127.0.0.1 临时端口，验证只读请求，不涉及现场网。
-
-测试覆盖协议固定帧与本机回环（含只写参数区报文）、治理失败路径、工作副本、防 XXE、SMART 工程桥以及 MCP 工具。最终验收结果以本次 Release 构建和 `dotnet test` 的实际输出为准。构建后可运行 `python scripts/smoke_test.py` 验证独立进程的 stdio；脚本不会调用物理目标 probe/read。
-
-内存模拟与自建协议服务器不能证明厂商互操作性；后续需用厂商仿真器和真实 CPU 做独立对照。除可选 MicroWIN SMART 桥外，其他品牌工程后端仍需安装授权 IDE、精确版本的 worker，并完成编译、往返、落盘和目标回读验证。仓库未集成 CODESYS/TIA/GX/Sysmac 自动编译下载；资源复用与许可见 [第三方说明](THIRD-PARTY-NOTICES.md)。
+本项目当前没有跨品牌通用编译器，也没有现场下载、RUN/STOP、Force、真实写参数、在线编辑、原生 HMI 发布、密码管理、内存清除/格式化或持续 SCADA 订阅入口。要从 `Unsupported` 升级任何厂商工程能力，必须提供精确版本、worker handshake、工程副本前后 hash、实际产物 hash、回读/重开证据和独立台架验证；方法名、COM 注册、安装目录或反编译结果都不够。

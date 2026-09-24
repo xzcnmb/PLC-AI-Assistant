@@ -9,6 +9,8 @@ using PlcMcp.Server.Governance;
 using PlcMcp.Engineering.Jobs;
 using PlcMcp.Engineering.Models;
 using PlcMcp.Engineering.Hmi;
+using PlcMcp.Engineering.Workers.Codesys;
+using PlcMcp.Engineering.Workers.Omron;
 
 namespace PlcMcp.Server.Mcp;
 
@@ -67,6 +69,14 @@ public sealed class McpToolRouter
             }
             if (rawResult is EngineeringExecutionResult { Success: false } failedEngineering)
                 return CreateToolCallResult(isError: true, failedEngineering, failedEngineering.Message);
+            if (rawResult is JsonElement jsonElem && jsonElem.ValueKind == JsonValueKind.Object)
+            {
+                if (jsonElem.TryGetProperty("healthy", out var healthyProp) && !healthyProp.GetBoolean())
+                {
+                    string details = jsonElem.TryGetProperty("details", out var det) ? (det.GetString() ?? "Doctor diagnosis reported failures.") : "Doctor diagnosis reported failures.";
+                    return CreateToolCallResult(isError: true, jsonElem, details);
+                }
+            }
 
             return CreateToolCallResult(isError: false, rawResult);
         }
@@ -146,7 +156,7 @@ public sealed class McpToolRouter
                     filter = new
                     {
                         type = "string",
-                        description = "Optional keyword to filter tag names or aliases."
+                        description = "Optional filter keyword to match tag names or aliases."
                     }
                 },
                 required = new[] { "targetId" }
@@ -155,7 +165,7 @@ public sealed class McpToolRouter
 
         Register(
             name: "plc_probe_target",
-            description: "Probes a target to verify reachability and runtime communication state.",
+            description: "Tests reachability and handshake for a specified PLC target.",
             readOnly: true,
             destructive: false,
             schema: new
@@ -166,7 +176,7 @@ public sealed class McpToolRouter
                     targetId = new
                     {
                         type = "string",
-                        description = "Target identifier to probe (e.g. 'sim-siemens')."
+                        description = "Target identifier (e.g. 'sim-siemens')."
                     }
                 },
                 required = new[] { "targetId" }
@@ -175,7 +185,7 @@ public sealed class McpToolRouter
 
         Register(
             name: "plc_read_tags",
-            description: "Reads current values, data types, and quality codes for specified tags on a target.",
+            description: "Reads one or more tag values from a target.",
             readOnly: true,
             destructive: false,
             schema: new
@@ -193,22 +203,16 @@ public sealed class McpToolRouter
                         type = "array",
                         items = new { type = "string" },
                         description = "List of tag names or aliases to read."
-                    },
-                    names = new
-                    {
-                        type = "array",
-                        items = new { type = "string" },
-                        description = "Alias for 'tags'."
                     }
                 },
-                required = new[] { "targetId" }
+                required = new[] { "targetId", "tags" }
             },
             handler: HandleReadTagsAsync);
 
         Register(
             name: "plc_plan_write",
-            description: "Creates a safety-checked write plan with state hash fingerprint and approval token, without modifying PLC state immediately.",
-            readOnly: false,
+            description: "Creates an isolated write plan with type and safety range validation, returning an approval token.",
+            readOnly: true,
             destructive: false,
             schema: new
             {
@@ -223,12 +227,12 @@ public sealed class McpToolRouter
                     changes = new
                     {
                         type = "object",
-                        description = "Dictionary of tag names to requested new values, e.g. {\"PressureSetpoint\": 5.5}."
+                        description = "Dictionary of tag names and proposed string values."
                     },
                     lifetimeMinutes = new
                     {
                         type = "number",
-                        description = "Optional plan validity duration in minutes (default: 5)."
+                        description = "Optional plan lifetime in minutes (max 5)."
                     }
                 },
                 required = new[] { "targetId", "changes" }
@@ -237,7 +241,7 @@ public sealed class McpToolRouter
 
         Register(
             name: "plc_apply_write",
-            description: "Applies an approved write plan using its plan ID and approval token after verifying state hash consistency.",
+            description: "Consumes an approved write plan, verifies state hash, and applies changes atomically.",
             readOnly: false,
             destructive: true,
             schema: new
@@ -248,12 +252,12 @@ public sealed class McpToolRouter
                     planId = new
                     {
                         type = "string",
-                        description = "The plan ID generated by plc_plan_write."
+                        description = "Plan identifier returned by plc_plan_write."
                     },
                     approvalToken = new
                     {
                         type = "string",
-                        description = "The approval token generated by plc_plan_write."
+                        description = "Approval token returned by plc_plan_write."
                     }
                 },
                 required = new[] { "planId", "approvalToken" }
@@ -297,6 +301,34 @@ public sealed class McpToolRouter
                 new { type = "object", properties = new { leftPath = new { type = "string" }, rightPath = new { type = "string" } }, required = new[] { "leftPath", "rightPath" } }, HandleCompareProjectsAsync);
         Register("plc_get_capabilities_report", "Returns capability evidence and local doctor status for a target.", true, false,
             new { type = "object", properties = new { targetId = new { type = "string" } }, required = new[] { "targetId" } }, HandleCapabilityReportAsync);
+        if (_governance.CodesysWorker is not null)
+        {
+            Register("plc_codesys_doctor", "Read-only CODESYS offline worker diagnosis (version/profile/script pin); never starts CODESYS or touches a PLC.", true, false,
+                new { type = "object", properties = new { }, required = Array.Empty<string>() }, HandleCodesysDoctorAsync);
+        }
+        if (_governance.CodesysWorker?.IsAvailable == true)
+        {
+            Register("plc_codesys_inspect", "Inspects a CODESYS project from a protected working copy via the installed ScriptEngine; offline only.", true, false,
+                new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } }, HandleCodesysInspectAsync);
+            Register("plc_codesys_export", "Exports a CODESYS project to PLCopen XML inside an isolated working copy; offline only.", true, false,
+                new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } }, HandleCodesysExportAsync);
+            Register("plc_codesys_compile", "Runs CODESYS clean/build/rebuild on a protected working copy and returns verifiable artifacts; no download or online action.", false, false,
+                new { type = "object", properties = new { projectPath = new { type = "string" }, mode = new { type = "string", @enum = new[] { "build", "clean", "rebuild" } } }, required = new[] { "projectPath" } }, HandleCodesysCompileAsync);
+        }
+        if (_governance.GxWorks3Probe is not null)
+        {
+            Register("plc_gxworks3_doctor", "Runs isolated read-only GX Works3 metadata and service probe diagnosis; never starts GXW3 or touches a PLC.", true, false,
+                new { type = "object", properties = new { }, required = Array.Empty<string>() }, HandleGxWorks3DoctorAsync);
+        }
+        Register("plc_omron_doctor", "Reports Sysmac Studio/CX-Server files, versions, PE bitness, hashes, and static COM registration; never starts Omron software or activates COM.", true, false,
+            new { type = "object", properties = new { }, required = Array.Empty<string>() }, HandleOmronDoctorAsync);
+        if (_governance.OmronExchange is not null)
+        {
+            Register("plc_omron_exchange_inspect", "Structurally inspects IEC 61131-10/PLCopen XML or AutomationML within the bounded engineering root; no vendor compiler or import.", true, false,
+                new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } }, HandleOmronExchangeInspectAsync);
+            Register("plc_omron_exchange_compare", "Compares two bounded Omron standard exchange files with stable structural and raw-extension hashes.", true, false,
+                new { type = "object", properties = new { leftPath = new { type = "string" }, rightPath = new { type = "string" } }, required = new[] { "leftPath", "rightPath" } }, HandleOmronExchangeCompareAsync);
+        }
         Register("plc_get_audit", "Verifies and reads the append-only audit hash chain.", true, false,
             new { type = "object", properties = new { verify = new { type = "boolean" } }, required = Array.Empty<string>() }, HandleGetAuditAsync);
         Register("plc_monitor_window", "Samples a finite read-only window; values are not an atomic PLC scan snapshot.", true, false,
@@ -428,6 +460,68 @@ public sealed class McpToolRouter
         var job = new EngineeringJobRequest(Guid.NewGuid().ToString("N"), EngineeringJobType.ValidatePou, PlcVendor.Siemens, path,
             new Dictionary<string, string> { ["blockNames"] = string.Join(",", blocks) });
         return await worker.ExecuteAsync(job, cancellationToken);
+    }
+
+    private Task<object> HandleCodesysDoctorAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var worker = _governance.CodesysWorker ?? throw new NotSupportedException("CODESYS worker unavailable.");
+        return Task.FromResult<object>(worker.CheckDoctor(cancellationToken));
+    }
+
+    private async Task<object> HandleCodesysInspectAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var worker = _governance.CodesysWorker ?? throw new NotSupportedException("CODESYS worker unavailable.");
+        var path = RequireString(args, "projectPath", "project_path");
+        var job = new EngineeringJobRequest(Guid.NewGuid().ToString("N"), EngineeringJobType.InspectProject, PlcVendor.Generic, path);
+        return await worker.ExecuteAsync(job, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<object> HandleCodesysExportAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var worker = _governance.CodesysWorker ?? throw new NotSupportedException("CODESYS worker unavailable.");
+        var path = RequireString(args, "projectPath", "project_path");
+        var job = new EngineeringJobRequest(Guid.NewGuid().ToString("N"), EngineeringJobType.ExportPou, PlcVendor.Generic, path);
+        return await worker.ExecuteAsync(job, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<object> HandleCodesysCompileAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var worker = _governance.CodesysWorker ?? throw new NotSupportedException("CODESYS worker unavailable.");
+        var path = RequireString(args, "projectPath", "project_path");
+        var modeRaw = TryGetString(args, "mode") ?? "build";
+        var mode = modeRaw.ToLowerInvariant();
+        if (mode is not ("build" or "clean" or "rebuild"))
+            throw new ArgumentException("Parameter 'mode' must be one of: build, clean, rebuild.");
+        var job = new EngineeringJobRequest(Guid.NewGuid().ToString("N"), EngineeringJobType.CompileProject, PlcVendor.Generic, path,
+            new Dictionary<string, string> { ["mode"] = mode });
+        return await worker.ExecuteAsync(job, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<object> HandleGxWorks3DoctorAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var probe = _governance.GxWorks3Probe ?? throw new NotSupportedException("GX Works3 probe worker unavailable.");
+        return await probe.RunDoctorAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private Task<object> HandleOmronDoctorAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<object>(_governance.OmronDoctor.Diagnose());
+    }
+
+    private Task<object> HandleOmronExchangeInspectAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var service = _governance.OmronExchange ?? throw new NotSupportedException("Omron exchange root is not configured.");
+        var path = RequireString(args, "path", "filePath", "file_path");
+        return Task.FromResult<object>(service.Inspect(path));
+    }
+
+    private Task<object> HandleOmronExchangeCompareAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var service = _governance.OmronExchange ?? throw new NotSupportedException("Omron exchange root is not configured.");
+        var left = RequireString(args, "leftPath", "left_path");
+        var right = RequireString(args, "rightPath", "right_path");
+        return Task.FromResult<object>(service.Compare(left, right));
     }
 
     private Task<object> HandleDoctorAsync(JsonElement args, CancellationToken cancellationToken) =>
@@ -602,19 +696,19 @@ public sealed class McpToolRouter
     private async Task<object> HandleApplyWriteAsync(JsonElement args, CancellationToken cancellationToken)
     {
         string planId = RequireString(args, "planId", "plan_id");
-        string approvalToken = RequireString(args, "approvalToken", "approval_token", "token");
+        string approvalToken = RequireString(args, "approvalToken", "approval_token");
 
-        var applyResult = await _service.ApplyWriteAsync(planId, approvalToken, cancellationToken).ConfigureAwait(false);
-        return applyResult;
+        var result = await _service.ApplyWriteAsync(planId, approvalToken, cancellationToken).ConfigureAwait(false);
+        return result;
     }
 
-    private static object CreateToolCallResult(bool isError, object payload, string? errorText = null)
+    private static object CreateToolCallResult(bool isError, object structuredResult, string? errorText = null)
     {
-        string jsonText = JsonSerializer.Serialize(payload, JsonRpc.SerializerOptions);
+        string jsonText = JsonSerializer.Serialize(structuredResult, JsonRpc.SerializerOptions);
         JsonObject? node = null;
         try
         {
-            node = JsonSerializer.Deserialize<JsonObject>(jsonText, JsonRpc.SerializerOptions);
+            node = JsonNode.Parse(jsonText) as JsonObject;
         }
         catch
         {
@@ -737,53 +831,17 @@ public sealed class McpToolRouter
                     var s = prop.GetString();
                     if (!string.IsNullOrWhiteSpace(s))
                     {
-                        return [s];
+                        return new[] { s };
                     }
-                    throw new ArgumentException($"Parameter '{name}' cannot be empty string.");
+                    throw new ArgumentException($"Parameter '{name}' cannot be an empty string.");
                 }
 
-                throw new ArgumentException($"Parameter '{name}' must be a string array or string.");
+                throw new ArgumentException($"Parameter '{name}' must be an array of strings.");
             }
         }
 
-        string fallbackName = propertyNames.FirstOrDefault() ?? "parameter";
-        throw new ArgumentException($"Parameter '{fallbackName}' is required and must be a non-empty array of strings.");
-    }
-
-    private static IReadOnlyDictionary<string, object?> RequireDictionary(JsonElement args, params string[] propertyNames)
-    {
-        if (args.ValueKind != JsonValueKind.Object)
-        {
-            string primaryName = propertyNames.FirstOrDefault() ?? "parameter";
-            throw new ArgumentException($"Parameter '{primaryName}' must be provided in an arguments object.");
-        }
-
-        foreach (var name in propertyNames)
-        {
-            if (args.TryGetProperty(name, out var prop))
-            {
-                if (prop.ValueKind == JsonValueKind.Object)
-                {
-                    var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var property in prop.EnumerateObject())
-                    {
-                        dict[property.Name] = ConvertJsonElement(property.Value);
-                    }
-
-                    if (dict.Count == 0)
-                    {
-                        throw new ArgumentException($"Parameter '{name}' cannot be an empty object.");
-                    }
-
-                    return dict;
-                }
-
-                throw new ArgumentException($"Parameter '{name}' must be an object with tag changes.");
-            }
-        }
-
-        string fallbackName = propertyNames.FirstOrDefault() ?? "parameter";
-        throw new ArgumentException($"Parameter '{fallbackName}' is required and must be an object with tag changes.");
+        string primary = propertyNames.FirstOrDefault() ?? "parameter";
+        throw new ArgumentException($"Parameter '{primary}' must be provided in an arguments object.");
     }
 
     private static double? TryGetDouble(JsonElement args, params string[] propertyNames)
@@ -797,34 +855,69 @@ public sealed class McpToolRouter
         {
             if (args.TryGetProperty(name, out var prop))
             {
-                if (prop.ValueKind == JsonValueKind.Number)
+                if (prop.ValueKind == JsonValueKind.Number && prop.TryGetDouble(out var num))
                 {
-                    return prop.GetDouble();
+                    return num;
                 }
                 if (prop.ValueKind == JsonValueKind.Null)
                 {
                     return null;
                 }
-                if (prop.ValueKind == JsonValueKind.String &&
-                    double.TryParse(prop.GetString(), System.Globalization.CultureInfo.InvariantCulture, out var parsed))
-                {
-                    return parsed;
-                }
-                throw new ArgumentException($"Parameter '{name}' must be a numeric value.");
+                throw new ArgumentException($"Parameter '{name}' must be a number.");
             }
         }
 
         return null;
     }
 
-    private static object? ConvertJsonElement(JsonElement element) => element.ValueKind switch
+    private static IReadOnlyDictionary<string, string> RequireDictionary(JsonElement args, params string[] propertyNames)
     {
-        JsonValueKind.True => true,
-        JsonValueKind.False => false,
-        JsonValueKind.Number when element.TryGetInt64(out var i) => i,
-        JsonValueKind.Number => element.GetDouble(),
-        JsonValueKind.String => element.GetString(),
-        JsonValueKind.Null => null,
-        _ => throw new ArgumentException($"Unsupported JSON value type '{element.ValueKind}' in parameter payload.")
-    };
+        if (args.ValueKind != JsonValueKind.Object)
+        {
+            string primary = propertyNames.FirstOrDefault() ?? "parameter";
+            throw new ArgumentException($"Parameter '{primary}' must be provided in an arguments object.");
+        }
+
+        foreach (var name in propertyNames)
+        {
+            if (args.TryGetProperty(name, out var prop))
+            {
+                if (prop.ValueKind != JsonValueKind.Object)
+                {
+                    throw new ArgumentException($"Parameter '{name}' must be an object.");
+                }
+
+                var dict = new Dictionary<string, string>();
+                foreach (var propItem in prop.EnumerateObject())
+                {
+                    if (propItem.Value.ValueKind == JsonValueKind.String)
+                    {
+                        dict[propItem.Name] = propItem.Value.GetString()!;
+                    }
+                    else if (propItem.Value.ValueKind == JsonValueKind.Number)
+                    {
+                        dict[propItem.Name] = propItem.Value.GetRawText();
+                    }
+                    else if (propItem.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    {
+                        dict[propItem.Name] = propItem.Value.GetBoolean().ToString().ToLowerInvariant();
+                    }
+                    else
+                    {
+                        throw new ArgumentException($"Property '{propItem.Name}' in '{name}' must be a scalar string, number, or boolean.");
+                    }
+                }
+
+                if (dict.Count == 0)
+                {
+                    throw new ArgumentException($"Parameter '{name}' cannot be an empty dictionary.");
+                }
+
+                return dict;
+            }
+        }
+
+        string primaryName = propertyNames.FirstOrDefault() ?? "parameter";
+        throw new ArgumentException($"Parameter '{primaryName}' must be provided in an arguments object.");
+    }
 }

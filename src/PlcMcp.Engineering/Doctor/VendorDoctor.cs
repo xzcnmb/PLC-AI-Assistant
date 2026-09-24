@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json.Serialization;
 using Microsoft.Win32;
+using PlcMcp.Engineering.Workers.External;
 
 namespace PlcMcp.Engineering.Doctor;
 
@@ -13,7 +14,8 @@ public enum VendorSoftwareKind
     Codesys,
     InoProShop,
     PlcSim,
-    GxSimulator
+    GxSimulator,
+    CxServer
 }
 
 public sealed record VendorSoftwareReport(
@@ -23,7 +25,10 @@ public sealed record VendorSoftwareReport(
     [property: JsonPropertyName("executablePath")] string? ExecutablePath,
     [property: JsonPropertyName("version")] string? Version,
     [property: JsonPropertyName("details")] string Details,
-    [property: JsonPropertyName("disclaimer")] string Disclaimer = "Detection is read-only heuristic and does not imply valid vendor license or API authorization.");
+    [property: JsonPropertyName("disclaimer")] string Disclaimer = "Detection is read-only heuristic and does not imply valid vendor license or API authorization.",
+    [property: JsonPropertyName("registryVersion")] string? RegistryVersion = null,
+    [property: JsonPropertyName("bitness")] string? Bitness = null,
+    [property: JsonPropertyName("omronReport")] PlcMcp.Engineering.Workers.Omron.OmronDoctorReport? OmronReport = null);
 
 public sealed record SystemDoctorReport(
     [property: JsonPropertyName("scannedAt")] DateTimeOffset ScannedAt,
@@ -39,6 +44,20 @@ public interface IVendorDoctor
 
 public sealed class VendorDoctor : IVendorDoctor
 {
+    private readonly string? _customGxWorks3Path;
+    private readonly string? _customSysmacStudioPath;
+    private readonly string? _customCxServerPath;
+
+    public VendorDoctor(
+        string? customGxWorks3Path = null,
+        string? customSysmacStudioPath = null,
+        string? customCxServerPath = null)
+    {
+        _customGxWorks3Path = customGxWorks3Path;
+        _customSysmacStudioPath = customSysmacStudioPath;
+        _customCxServerPath = customCxServerPath;
+    }
+
     public SystemDoctorReport RunFullDiagnosis()
     {
         var items = new List<VendorSoftwareReport>
@@ -69,12 +88,13 @@ public sealed class VendorDoctor : IVendorDoctor
         {
             VendorSoftwareKind.MicroWinSmart => CheckMicroWinSmart(),
             VendorSoftwareKind.TiaPortalOpenness => CheckTiaOpenness(),
-            VendorSoftwareKind.GxWorks3 => CheckGxWorks3(),
-            VendorSoftwareKind.SysmacStudio => CheckSysmacStudio(),
+            VendorSoftwareKind.GxWorks3 => CheckGxWorks3(_customGxWorks3Path),
+            VendorSoftwareKind.SysmacStudio => CheckSysmacStudio(_customSysmacStudioPath, _customCxServerPath),
             VendorSoftwareKind.Codesys => CheckCodesys(),
             VendorSoftwareKind.InoProShop => CheckInoProShop(),
             VendorSoftwareKind.PlcSim => CheckPlcSim(),
             VendorSoftwareKind.GxSimulator => CheckGxSimulator(),
+            VendorSoftwareKind.CxServer => CheckCxServer(_customCxServerPath),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
         };
     }
@@ -170,78 +190,108 @@ public sealed class VendorDoctor : IVendorDoctor
             Details: "TIA Portal Openness assembly/registry not detected.");
     }
 
-    private static VendorSoftwareReport CheckGxWorks3()
+    public static VendorSoftwareReport CheckGxWorks3(string? customPath = null)
     {
-        var candidatePaths = new[]
-        {
-            @"C:\Program Files (x86)\MELSOFT\GXW3\GXW3.exe",
-            @"C:\Program Files\MELSOFT\GXW3\GXW3.exe"
-        };
-
-        foreach (var path in candidatePaths)
-        {
-            if (File.Exists(path))
-            {
-                var vi = FileVersionInfo.GetVersionInfo(path);
-                return new VendorSoftwareReport(
-                    Kind: VendorSoftwareKind.GxWorks3,
-                    Name: "Mitsubishi GX Works3",
-                    Installed: true,
-                    ExecutablePath: path,
-                    Version: vi.FileVersion ?? vi.ProductVersion,
-                    Details: $"GX Works3 executable found at {path}.");
-            }
-        }
+        var detector = new GxWorksProfileDetector(customPath);
+        var profile = detector.DetectProfile();
 
         return new VendorSoftwareReport(
             Kind: VendorSoftwareKind.GxWorks3,
-            Name: "Mitsubishi GX Works3",
-            Installed: false,
-            ExecutablePath: null,
-            Version: null,
-            Details: "Mitsubishi GX Works3 not detected.");
+            Name: profile.ToolchainName,
+            Installed: profile.Installed,
+            ExecutablePath: profile.ExecutablePath,
+            Version: profile.Version,
+            Details: profile.Details,
+            RegistryVersion: profile.RegistryVersion,
+            Bitness: profile.Bitness);
     }
 
-    private static VendorSoftwareReport CheckSysmacStudio()
+    public static VendorSoftwareReport CheckSysmacStudio(string? customSysmacPath = null, string? customCxServerPath = null)
     {
-        var candidatePaths = new[]
-        {
-            @"C:\Program Files (x86)\OMRON\Sysmac Studio\SysmacStudio.exe",
-            @"C:\Program Files\OMRON\Sysmac Studio\SysmacStudio.exe"
-        };
-
-        foreach (var path in candidatePaths)
-        {
-            if (File.Exists(path))
-            {
-                var vi = FileVersionInfo.GetVersionInfo(path);
-                return new VendorSoftwareReport(
-                    Kind: VendorSoftwareKind.SysmacStudio,
-                    Name: "Omron Sysmac Studio",
-                    Installed: true,
-                    ExecutablePath: path,
-                    Version: vi.FileVersion ?? vi.ProductVersion,
-                    Details: $"Sysmac Studio executable found at {path}.");
-            }
-        }
+        var detector = new SysmacProfileDetector(customSysmacPath, customCxServerPath);
+        var profile = detector.DetectProfile();
+        var omronReport = detector.DiagnoseOmron(customSysmacPath, customCxServerPath);
 
         return new VendorSoftwareReport(
             Kind: VendorSoftwareKind.SysmacStudio,
-            Name: "Omron Sysmac Studio",
-            Installed: false,
-            ExecutablePath: null,
-            Version: null,
-            Details: "Omron Sysmac Studio not detected.");
+            Name: profile.ToolchainName,
+            Installed: profile.Installed,
+            ExecutablePath: profile.ExecutablePath,
+            Version: profile.Version,
+            Details: profile.Details,
+            RegistryVersion: profile.RegistryVersion,
+            Bitness: profile.Bitness,
+            OmronReport: omronReport);
+    }
+
+    public static VendorSoftwareReport CheckCxServer(string? customCxServerPath = null)
+    {
+        var detector = new CxServerProfileDetector(customCxServerPath);
+        var profile = detector.DetectProfile();
+
+        return new VendorSoftwareReport(
+            Kind: VendorSoftwareKind.CxServer,
+            Name: profile.ToolchainName,
+            Installed: profile.Installed,
+            ExecutablePath: profile.ExecutablePath,
+            Version: profile.Version,
+            Details: profile.Details,
+            RegistryVersion: profile.RegistryVersion,
+            Bitness: profile.Bitness);
+    }
+
+    public PlcMcp.Engineering.Workers.Omron.OmronDoctorReport DiagnoseOmron()
+    {
+        return PlcMcp.Engineering.Workers.Omron.OmronInstallationDoctor.DiagnoseHost(
+            _customSysmacStudioPath,
+            _customCxServerPath);
+    }
+
+    public static PlcMcp.Engineering.Workers.Omron.OmronDoctorReport DiagnoseOmron(
+        string? customSysmacPath = null,
+        string? customCxServerPath = null)
+    {
+        return PlcMcp.Engineering.Workers.Omron.OmronInstallationDoctor.DiagnoseHost(
+            customSysmacPath,
+            customCxServerPath);
     }
 
     private static VendorSoftwareReport CheckCodesys()
     {
-        var candidatePaths = new[]
+        var candidatePaths = new List<string>
         {
             @"C:\Program Files\CODESYS 3.5\CODESYS\Common\CODESYS.exe",
             @"C:\Program Files (x86)\CODESYS 3.5\CODESYS\Common\CODESYS.exe",
             @"C:\Program Files\3S CODESYS\CODESYS\Common\CODESYS.exe"
         };
+
+        var searchRoots = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)
+        };
+
+        foreach (var root in searchRoots)
+        {
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+                continue;
+
+            try
+            {
+                foreach (var dir in Directory.GetDirectories(root, "*CODESYS*"))
+                {
+                    var candidate = Path.Combine(dir, "CODESYS", "Common", "CODESYS.exe");
+                    if (!candidatePaths.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+                    {
+                        candidatePaths.Add(candidate);
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore filesystem scan errors
+            }
+        }
 
         foreach (var path in candidatePaths)
         {
@@ -318,7 +368,7 @@ public sealed class VendorDoctor : IVendorDoctor
                     Installed: true,
                     ExecutablePath: path,
                     Version: vi.FileVersion ?? vi.ProductVersion,
-                    Details: $"Siemens PLCSIM executable found at {path}.");
+                    Details: $"S7-PLCSIM executable found at {path}.");
             }
         }
 
@@ -335,8 +385,9 @@ public sealed class VendorDoctor : IVendorDoctor
     {
         var candidatePaths = new[]
         {
-            @"C:\Program Files (x86)\MELSOFT\SIM3\GXSim3.exe",
-            @"C:\Program Files\MELSOFT\SIM3\GXSim3.exe"
+            @"D:\gwork2\GPPW3\GXSimulator3\Common\GXS3SysSim.exe",
+            @"C:\Program Files (x86)\MELSOFT\GXW3\GXSimulator3\Common\GXS3SysSim.exe",
+            @"C:\Program Files\MELSOFT\GXW3\GXSimulator3\Common\GXS3SysSim.exe"
         };
 
         foreach (var path in candidatePaths)
@@ -346,20 +397,20 @@ public sealed class VendorDoctor : IVendorDoctor
                 var vi = FileVersionInfo.GetVersionInfo(path);
                 return new VendorSoftwareReport(
                     Kind: VendorSoftwareKind.GxSimulator,
-                    Name: "Mitsubishi GX Simulator",
+                    Name: "Mitsubishi GX Simulator3",
                     Installed: true,
                     ExecutablePath: path,
                     Version: vi.FileVersion ?? vi.ProductVersion,
-                    Details: $"GX Simulator executable found at {path}.");
+                    Details: $"GX Simulator3 executable found at {path}.");
             }
         }
 
         return new VendorSoftwareReport(
             Kind: VendorSoftwareKind.GxSimulator,
-            Name: "Mitsubishi GX Simulator",
+            Name: "Mitsubishi GX Simulator3",
             Installed: false,
             ExecutablePath: null,
             Version: null,
-            Details: "Mitsubishi GX Simulator not detected.");
+            Details: "Mitsubishi GX Simulator3 not detected.");
     }
 }
