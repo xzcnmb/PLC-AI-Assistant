@@ -9,7 +9,7 @@ using PlcMcp.Runtime.Policy;
 namespace PlcMcp.Adapters;
 
 public sealed record ConfiguredTarget(string Id, PlcVendor Vendor, string Family, EndpointProfile Endpoint,
-    IReadOnlyList<TagDefinition> Tags, string? Model = null, string? Firmware = null);
+    IReadOnlyList<TagDefinition> Tags, string? Model = null, string? Firmware = null, string? Description = null);
 public sealed record PlcConfiguration(int SchemaVersion, IReadOnlyList<ConfiguredTarget> Targets,
     [property: JsonPropertyName("$schema")] string? Schema = null);
 
@@ -36,7 +36,7 @@ public static class ConfiguredPlcComposition
     {
         if (configuration.SchemaVersion != 1 || configuration.Targets is null || configuration.Targets.Count is < 1 or > 32)
             throw new ArgumentException("Configuration schemaVersion must be 1 with 1 to 32 explicit targets.");
-        IPlcProtocolAdapter[] adapters = [new S7ReadAdapter(), new FinsTcpAdapter(), new SlmpAdapter(), new ModbusTcpAdapter()];
+        IPlcProtocolAdapter[] adapters = [new S7ReadAdapter(), new FinsTcpAdapter(), new SlmpAdapter(), new ModbusTcpAdapter(), new InovanceModbusTcpAdapter()];
         var profiles = new List<TargetProfile>();
         var manifests = new Dictionary<string, IReadOnlyList<TagDefinition>>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in configuration.Targets)
@@ -56,8 +56,9 @@ public static class ConfiguredPlcComposition
                 throw new ArgumentException("FINS unit must be 0..255.");
             if (ep.Transport == TransportKind.Slmp && ep.Unit is not (null or 0))
                 throw new ArgumentException("SLMP only supports local station 0.");
-            var adapter = adapters.SingleOrDefault(a => a.Transports.Contains(ep.Transport))
-                ?? throw new NotSupportedException($"Transport '{ep.Transport}' has no installed read adapter. OPC UA/CIP remain planned capabilities.");
+            // Several adapters can share a transport (ModbusTcp is served by the generic and
+            // the Inovance profile); prefer the vendor-specific adapter, then the generic one.
+            var adapter = SelectAdapter(adapters, ep.Transport, entry.Vendor);
             if (adapter.Vendor != PlcVendor.Generic && adapter.Vendor != entry.Vendor)
                 throw new ArgumentException("Target vendor does not match selected protocol adapter.");
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -73,7 +74,12 @@ public static class ConfiguredPlcComposition
                 switch (ep.Transport)
                 {
                     case TransportKind.S7Comm: S7ReadAdapter.ParseAddress(tag); break;
-                    case TransportKind.ModbusTcp: ModbusTcpAdapter.BuildRead(1, 1, tag); break;
+                    case TransportKind.ModbusTcp:
+                        if (adapter is InovanceModbusTcpAdapter)
+                            InovanceSoftAddress.Map(InovanceSoftAddress.ResolveModel(entry.Model, entry.Family), tag);
+                        else
+                            ModbusTcpAdapter.BuildRead(1, 1, tag);
+                        break;
                     case TransportKind.Fins: FinsTcpAdapter.BuildRead(1, 2, 0, 1, tag); break;
                     case TransportKind.Slmp: SlmpAdapter.BuildRead(tag); break;
                 }
@@ -86,12 +92,25 @@ public static class ConfiguredPlcComposition
         return new(new PlcRuntimeService(profiles, manifests, new ProtocolRuntimeClient(adapters),
             new SafetyPolicy("physical-readonly", allowSimulationWrites: false), new PlanStore(), audit), audit);
     }
+
+    // Prefers a vendor-specific adapter for the transport (Inovance Modbus TCP), then falls
+    // back to the generic adapter. Behaviour for the existing single-adapter transports is
+    // unchanged.
+    internal static IPlcProtocolAdapter SelectAdapter(IReadOnlyList<IPlcProtocolAdapter> adapters,
+        TransportKind transport, PlcVendor vendor)
+    {
+        var candidates = adapters.Where(a => a.Transports.Contains(transport)).ToArray();
+        return candidates.FirstOrDefault(a => a.Vendor == vendor)
+            ?? candidates.FirstOrDefault(a => a.Vendor == PlcVendor.Generic)
+            ?? throw new NotSupportedException($"Transport '{transport}' has no installed read adapter. OPC UA/CIP remain planned capabilities.");
+    }
 }
 
 public sealed class ProtocolRuntimeClient(IEnumerable<IPlcProtocolAdapter> adapters) : IPlcRuntimeClient
 {
     private readonly IPlcProtocolAdapter[] _adapters = adapters.ToArray();
-    private IPlcProtocolAdapter For(TargetProfile target) => _adapters.Single(a => a.Transports.Contains(target.Endpoint.Transport));
+    private IPlcProtocolAdapter For(TargetProfile target) =>
+        ConfiguredPlcComposition.SelectAdapter(_adapters, target.Endpoint.Transport, target.Vendor);
     public Task<ProbeResult> ProbeAsync(TargetProfile target, CancellationToken cancellationToken = default) => For(target).ProbeAsync(target, cancellationToken);
     public Task<IReadOnlyList<TagValue>> ReadAsync(TargetProfile target, IReadOnlyList<TagDefinition> tags, CancellationToken cancellationToken = default) => For(target).ReadAsync(target, tags, cancellationToken);
     public Task<TagValue> WriteAsync(TargetProfile target, TagDefinition tag, object value, CancellationToken cancellationToken = default) =>

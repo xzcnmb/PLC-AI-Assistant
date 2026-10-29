@@ -14,6 +14,8 @@ public static class VendorCatalog
             "Runtime MC Protocol/SLMP profile; GX Works engineering bridge is experimental."),
         new("modbus-tcp", PlcVendor.Inovance, 502, "0-based coils and holding registers", true, false,
             "Runtime Modbus profile; word order must be explicit for 32-bit values."),
+        new("inovance-h-easy", PlcVendor.Inovance, 502, "H5U/H3U soft elements X/Y/M/S/T/C, D/R, DD via an explicit Modbus mapping table", true, false,
+            "Runtime read profile for Inovance H5U/H3U over Modbus TCP (adapter 'inovance-modbus-tcp'); soft-element to Modbus mapping is an explicit per-model table, not verified on hardware; Experimental: loopback fixtures pass, hardware qualification pending; read-only."),
         new("opcua", PlcVendor.Generic, 4840, "OPC UA NodeId", false, false,
             "Planned transport only; no OPC UA client is installed in this build."),
         new("simulation", PlcVendor.Generic, 0, "semantic tag names", true, true,

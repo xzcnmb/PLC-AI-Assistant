@@ -47,7 +47,7 @@ public abstract class ReadOnlyTcpAdapter : IPlcProtocolAdapter
         foreach (var tag in tags)
         {
             if (!tag.CanRead) throw new InvalidOperationException($"Tag '{tag.Name}' is not readable.");
-            ValidateTag(tag);
+            ValidateTag(tag, target);
         }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(target.Endpoint.TimeoutMs);
@@ -64,6 +64,11 @@ public abstract class ReadOnlyTcpAdapter : IPlcProtocolAdapter
     }
 
     protected virtual void ValidateTag(TagDefinition tag) => WireValue.Size(tag.DataType);
+
+    // Target-aware validation hook for adapters whose address grammar depends on the target
+    // model (e.g. Inovance soft elements). Defaults to the model-less check, so adapters that
+    // only override ValidateTag(TagDefinition) keep their existing behaviour.
+    protected virtual void ValidateTag(TagDefinition tag, TargetProfile target) => ValidateTag(tag);
     protected abstract Task<IReadOnlyList<TagValue>> ReadConnectedAsync(NetworkStream stream, TargetProfile target,
         IReadOnlyList<TagDefinition> tags, CancellationToken cancellationToken);
 

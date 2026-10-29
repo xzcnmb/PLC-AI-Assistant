@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json.Serialization;
 using Microsoft.Win32;
+using PlcMcp.Engineering.Workers.AutoShop;
 
 namespace PlcMcp.Engineering.Doctor;
 
@@ -12,6 +13,7 @@ public enum VendorSoftwareKind
     SysmacStudio,
     Codesys,
     InoProShop,
+    AutoShop,
     PlcSim,
     GxSimulator
 }
@@ -39,6 +41,13 @@ public interface IVendorDoctor
 
 public sealed class VendorDoctor : IVendorDoctor
 {
+    private readonly AutoShopEnvironmentDetector _autoShopDetector;
+
+    public VendorDoctor(AutoShopDetectionOptions? autoShopOptions = null)
+    {
+        _autoShopDetector = new AutoShopEnvironmentDetector(autoShopOptions);
+    }
+
     public SystemDoctorReport RunFullDiagnosis()
     {
         var items = new List<VendorSoftwareReport>
@@ -49,6 +58,7 @@ public sealed class VendorDoctor : IVendorDoctor
             CheckSoftware(VendorSoftwareKind.SysmacStudio),
             CheckSoftware(VendorSoftwareKind.Codesys),
             CheckSoftware(VendorSoftwareKind.InoProShop),
+            CheckSoftware(VendorSoftwareKind.AutoShop),
             CheckSoftware(VendorSoftwareKind.PlcSim),
             CheckSoftware(VendorSoftwareKind.GxSimulator)
         };
@@ -73,10 +83,25 @@ public sealed class VendorDoctor : IVendorDoctor
             VendorSoftwareKind.SysmacStudio => CheckSysmacStudio(),
             VendorSoftwareKind.Codesys => CheckCodesys(),
             VendorSoftwareKind.InoProShop => CheckInoProShop(),
+            VendorSoftwareKind.AutoShop => CheckAutoShop(),
             VendorSoftwareKind.PlcSim => CheckPlcSim(),
             VendorSoftwareKind.GxSimulator => CheckGxSimulator(),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
         };
+    }
+
+    private VendorSoftwareReport CheckAutoShop()
+    {
+        // Detection is fully injectable (paths/registry/TCP probes) so tests run offline.
+        AutoShopEnvironmentReport report = _autoShopDetector.Detect();
+        return new VendorSoftwareReport(
+            Kind: VendorSoftwareKind.AutoShop,
+            Name: "Inovance AutoShop",
+            Installed: report.Installed,
+            ExecutablePath: report.ExecutablePath,
+            Version: report.Version,
+            Details: report.Details,
+            Disclaimer: report.Disclaimer);
     }
 
     private static VendorSoftwareReport CheckMicroWinSmart()

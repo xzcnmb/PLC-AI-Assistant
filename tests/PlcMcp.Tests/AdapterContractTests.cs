@@ -54,7 +54,7 @@ public sealed class AdapterContractTests
     [Fact]
     public void PhysicalAdaptersNeverAdvertiseWrites()
     {
-        IPlcProtocolAdapter[] adapters = [new S7ReadAdapter(), new ModbusTcpAdapter(), new FinsTcpAdapter(), new SlmpAdapter()];
+        IPlcProtocolAdapter[] adapters = [new S7ReadAdapter(), new ModbusTcpAdapter(), new FinsTcpAdapter(), new SlmpAdapter(), new InovanceModbusTcpAdapter()];
         Assert.All(adapters, adapter =>
         {
             Assert.False(adapter.CanWrite(Target(PlcVendor.Generic, adapter.Transports[0], 1)));

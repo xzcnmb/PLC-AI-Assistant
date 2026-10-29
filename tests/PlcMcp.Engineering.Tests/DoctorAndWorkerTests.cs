@@ -42,7 +42,7 @@ public class DoctorAndWorkerTests : IDisposable
         var report = doctor.RunFullDiagnosis();
 
         Assert.NotNull(report);
-        Assert.Equal(8, report.Items.Count);
+        Assert.Equal(9, report.Items.Count);
 
         var kinds = report.Items.Select(i => i.Kind).ToHashSet();
         Assert.Contains(VendorSoftwareKind.MicroWinSmart, kinds);
@@ -51,6 +51,7 @@ public class DoctorAndWorkerTests : IDisposable
         Assert.Contains(VendorSoftwareKind.SysmacStudio, kinds);
         Assert.Contains(VendorSoftwareKind.Codesys, kinds);
         Assert.Contains(VendorSoftwareKind.InoProShop, kinds);
+        Assert.Contains(VendorSoftwareKind.AutoShop, kinds);
         Assert.Contains(VendorSoftwareKind.PlcSim, kinds);
         Assert.Contains(VendorSoftwareKind.GxSimulator, kinds);
 

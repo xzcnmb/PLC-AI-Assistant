@@ -1,5 +1,6 @@
 using System.Text;
 using PlcMcp.Adapters;
+using PlcMcp.Engineering.Workers.AutoShop;
 using PlcMcp.Server.Mcp;
 using PlcMcp.Server.Governance;
 
@@ -13,21 +14,68 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
+const string usage = "Usage: PlcMcp.Server [--config <readonly-targets.json>] [--smart-project-root <absolute-directory>] [--autoshop-bridge] [--autoshop-bridge-path <register-path>] [--autoshop-compile-rva <hex>] [--autoshop-allow-physical-write] [--autoshop-allow-physical-download]";
+
 string? configPath = null;
 string? smartProjectRoot = null;
-for (var i = 0; i < args.Length; i += 2)
+bool autoShopBridge = false;
+string? autoShopBridgePath = null;
+string? autoShopCompileRva = null;
+bool autoShopAllowPhysicalWrite = false;
+bool autoShopAllowPhysicalDownload = false;
+for (var i = 0; i < args.Length; i++)
 {
-    if (i + 1 >= args.Length || args[i] is not ("--config" or "--smart-project-root"))
+    switch (args[i])
     {
-        Console.Error.WriteLine("Usage: PlcMcp.Server [--config <readonly-targets.json>] [--smart-project-root <absolute-directory>]");
-        return 2;
+        case "--config":
+            if (configPath is not null || i + 1 >= args.Length) { Console.Error.WriteLine(usage); return 2; }
+            configPath = args[++i];
+            break;
+        case "--smart-project-root":
+            if (smartProjectRoot is not null || i + 1 >= args.Length) { Console.Error.WriteLine(usage); return 2; }
+            smartProjectRoot = args[++i];
+            break;
+        case "--autoshop-bridge":
+            if (autoShopBridge) { Console.Error.WriteLine("Each option can be supplied only once."); return 2; }
+            autoShopBridge = true;
+            break;
+        case "--autoshop-bridge-path":
+            if (autoShopBridgePath is not null || i + 1 >= args.Length) { Console.Error.WriteLine(usage); return 2; }
+            autoShopBridgePath = args[++i];
+            break;
+        case "--autoshop-compile-rva":
+            if (autoShopCompileRva is not null || i + 1 >= args.Length) { Console.Error.WriteLine(usage); return 2; }
+            autoShopCompileRva = args[++i];
+            break;
+        case "--autoshop-allow-physical-write":
+            if (autoShopAllowPhysicalWrite) { Console.Error.WriteLine("Each option can be supplied only once."); return 2; }
+            autoShopAllowPhysicalWrite = true;
+            break;
+        case "--autoshop-allow-physical-download":
+            if (autoShopAllowPhysicalDownload) { Console.Error.WriteLine("Each option can be supplied only once."); return 2; }
+            autoShopAllowPhysicalDownload = true;
+            break;
+        default:
+            Console.Error.WriteLine(usage);
+            return 2;
     }
-    if (args[i] == "--config" && configPath is null) configPath = args[i + 1];
-    else if (args[i] == "--smart-project-root" && smartProjectRoot is null) smartProjectRoot = args[i + 1];
-    else
+}
+
+AutoShopBridgeConfig? autoShopBridgeConfig = null;
+AutoShopInjectToolsOptions? autoShopInjectOptions = null;
+if (autoShopBridge)
+{
+    autoShopBridgeConfig = new AutoShopBridgeConfig
     {
-        Console.Error.WriteLine("Each option can be supplied only once.");
-        return 2;
+        RegisterPath = string.IsNullOrWhiteSpace(autoShopBridgePath) ? "PlcMcp.AutoShopBridge" : autoShopBridgePath
+    };
+    if (!string.IsNullOrWhiteSpace(autoShopCompileRva))
+    {
+        // E3 compile-entry override; the default is the verified 0x15A2EC0 compile-all entry.
+        autoShopInjectOptions = new AutoShopInjectToolsOptions
+        {
+            CompileEntryHint = $"{autoShopCompileRva} (compile-entry override)"
+        };
     }
 }
 
@@ -36,7 +84,7 @@ ServerGovernanceServices governance;
 try
 {
     host = configPath is null ? DefaultPlcComposition.Create() : ConfiguredPlcComposition.Load(configPath);
-    governance = new ServerGovernanceServices(Path.Combine(AppContext.BaseDirectory, "data"), smartProjectRoot);
+    governance = new ServerGovernanceServices(Path.Combine(AppContext.BaseDirectory, "data"), smartProjectRoot, autoShopBridgeConfig, autoShopInjectOptions: autoShopInjectOptions, allowPhysicalWrite: autoShopAllowPhysicalWrite, allowPhysicalDownload: autoShopAllowPhysicalDownload);
 }
 catch (Exception ex)
 {
@@ -53,5 +101,20 @@ try
 }
 catch (OperationCanceledException)
 {
+}
+finally
+{
+    // Clean up any owned AutoShop experiment instance (identity re-verified; journal recovery).
+    if (governance.AutoShopInject is not null)
+    {
+        try
+        {
+            await governance.AutoShopInject.StopOwnedAsync(cts.Token);
+        }
+        catch
+        {
+            // shutdown cleanup is best-effort
+        }
+    }
 }
 return 0;

@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\PlcMcp.Contracts\PlcMcp.Contracts.csproj" />
     <ProjectReference Include="..\..\src\PlcMcp.Engineering\PlcMcp.Engineering.csproj" />
+    <ProjectReference Include="..\..\src\PlcMcp.Server\PlcMcp.Server.csproj" />
   </ItemGroup>
 
 </Project>

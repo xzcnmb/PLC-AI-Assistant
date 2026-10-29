@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "sim-inovance-h5u-daemon",
+      "vendor": "Inovance",
+      "family": "H5U",
+      "description": "汇川 H5U 软件模拟器（h5u_daemon.exe）本机演示示例，指向 127.0.0.1:502。仅用于本机 AutoShop 模拟器演示：先用 --autoshop-bridge 启动 Server，再调用 plc_autoshop_simulator {action:'start'} 拉起本机模拟器进程（daemon 须已安装于 AutoShop 的 Simulator 目录）。连接实体 PLC 前必须把 host 换成真机地址并逐项核对软元件→Modbus 映射表（docs/usage.md 汇川运行时小节；该表是未在真机验证的文档默认值）。以下只读点位为协调人在本机模拟器上实证过的端到端点位（plc_probe_target TCP_CONNECTED；plc_read_tags D100/M0/X0/R100 全部 quality=good，初始值 0）。所有标签 canWrite=false，写工具不注册；plc_probe_target 的 TCP_CONNECTED 只表示 TCP 可达，不代表 CPU RUN；模拟器运行时程序默认 STOP，RUN 命令路径未逆向。AutoShop 接口为逆向所得、无厂商背书、版本锁定 4.12.0.2。",
+      "endpoint": {
+        "host": "127.0.0.1",
+        "port": 502,
+        "transport": "ModbusTcp",
+        "unit": 1,
+        "timeoutMs": 3000
+      },
+      "tags": [
+        {
+          "name": "Counter",
+          "nativeAddress": "D100",
+          "dataType": "Int32",
+          "byteOrder": "BigEndian",
+          "canRead": true,
+          "canWrite": false,
+          "description": "数据寄存器 D100 → 保持寄存器 100/101 两个寄存器；32 位值必须显式 byteOrder。本机模拟器已实证可读（quality=good）。"
+        },
+        {
+          "name": "RunState",
+          "nativeAddress": "M0",
+          "dataType": "Bool",
+          "canRead": true,
+          "canWrite": false,
+          "description": "辅助继电器 M0 → 线圈 1024（FC1）。本机模拟器已实证可读（quality=good）。"
+        },
+        {
+          "name": "InputX0",
+          "nativeAddress": "X0",
+          "dataType": "Bool",
+          "canRead": true,
+          "canWrite": false,
+          "description": "输入继电器 X0（八进制编号）→ 离散输入 0（FC2）。本机模拟器已实证可读（quality=good）。"
+        },
+        {
+          "name": "FileRegister",
+          "nativeAddress": "R100",
+          "dataType": "Int16",
+          "canRead": true,
+          "canWrite": false,
+          "description": "文件寄存器 R100 → 保持寄存器 32868（FC3）。本机模拟器已实证可读（quality=good）。"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "line5-inovance-h5u",
+      "vendor": "Inovance",
+      "family": "H5U",
+      "description": "汇川 H5U/H3U 只读示例（文档保留地址，192.0.2.50 为示例网段）。family 未设置 model 时按 family 命中软元件映射表，当前表支持 H3U/H5U；未知型号在加载时明确报错，不猜测。软元件 X/Y/M/S/T/C/D/R/DD 经显式映射表转换为 Modbus TCP（映射表见 docs/usage.md 汇川运行时小节；该表是未在真机验证的文档默认值，必须对照目标工程的 Modbus 地址映射核对）。HR/IR/DI 是 Modbus 原生零基地址，直通不转换；注意 C 前缀在汇川目标上按计数器软元件解析（映射表），不是通用 Modbus 线圈简写。位软元件配 Bool，字/双字配数值类型；32/64 位标签必须显式 byteOrder（BigEndian/ABCD、LittleEndian/DCBA、WordSwap/CDAB、ByteSwap/BADC），16 位无需指定。与其它物理目标一致：canWrite=false，不注册写工具；plc_probe_target 的 TCP_CONNECTED 只表示 TCP 可达。",
+      "endpoint": {
+        "host": "192.0.2.50",
+        "port": 502,
+        "transport": "ModbusTcp",
+        "unit": 1,
+        "timeoutMs": 3000
+      },
+      "tags": [
+        {
+          "name": "InputReady",
+          "nativeAddress": "X0",
+          "dataType": "Bool",
+          "canRead": true,
+          "canWrite": false,
+          "description": "输入继电器 X0（八进制编号）→ 离散输入 0（FC2）。"
+        },
+        {
+          "name": "MotorRun",
+          "nativeAddress": "Y0",
+          "dataType": "Bool",
+          "canRead": true,
+          "canWrite": false,
+          "description": "输出继电器 Y0（八进制编号）→ 线圈 0（FC1）。"
+        },
+        {
+          "name": "RunState",
+          "nativeAddress": "M0",
+          "dataType": "Bool",
+          "canRead": true,
+          "canWrite": false,
+          "description": "辅助继电器 M0 → 线圈 1024（FC1）。"
+        },
+        {
+          "name": "StepState",
+          "nativeAddress": "S0",
+          "dataType": "Bool",
+          "canRead": true,
+          "canWrite": false,
+          "description": "状态继电器 S0 → 线圈 9216（FC1）。"
+        },
+        {
+          "name": "TimerDone",
+          "nativeAddress": "T0",
+          "dataType": "Bool",
+          "canRead": true,
+          "canWrite": false,
+          "description": "定时器触点 T0 → 线圈 13312（FC1）。"
+        },
+        {
+          "name": "CounterDone",
+          "nativeAddress": "C0",
+          "dataType": "Bool",
+          "canRead": true,
+          "canWrite": false,
+          "description": "计数器触点 C0 → 线圈 14336（FC1）。"
+        },
+        {
+          "name": "Counter",
+          "nativeAddress": "D100",
+          "dataType": "Int16",
+          "canRead": true,
+          "canWrite": false,
+          "description": "数据寄存器 D100 → 保持寄存器 100（FC3）。"
+        },
+        {
+          "name": "FileRegister",
+          "nativeAddress": "R10",
+          "dataType": "UInt16",
+          "canRead": true,
+          "canWrite": false,
+          "description": "文件寄存器 R10 → 保持寄存器 32778（FC3）。"
+        },
+        {
+          "name": "PressureActual",
+          "nativeAddress": "D200",
+          "dataType": "Real",
+          "unit": "bar",
+          "minimum": 0,
+          "maximum": 10,
+          "byteOrder": "WordSwap",
+          "canRead": true,
+          "canWrite": false,
+          "description": "32 位实数 → 保持寄存器 200/201；byteOrder 必填，按目标工程 Modbus 映射的实际字序选择。"
+        },
+        {
+          "name": "CycleCount",
+          "nativeAddress": "DD300",
+          "dataType": "Int32",
+          "byteOrder": "BigEndian",
+          "canRead": true,
+          "canWrite": false,
+          "description": "双字 DD300 → 保持寄存器 300/301 两个寄存器；DD 只接受 32/64 位类型。"
+        },
+        {
+          "name": "ModbusNativeInput",
+          "nativeAddress": "DI100",
+          "dataType": "Bool",
+          "canRead": true,
+          "canWrite": false,
+          "description": "Modbus 原生零基地址直通示例：离散输入 100（FC2），不经映射表；等价通用写法见 profiles/readonly.example.json 的 line4。"
+        }
+      ]
+    }
+  ]
+}

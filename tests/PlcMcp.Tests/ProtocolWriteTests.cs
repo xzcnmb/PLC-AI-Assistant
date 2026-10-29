@@ -176,7 +176,7 @@ public sealed class ProtocolWriteTests
     [Fact]
     public async Task PhysicalAdapters_RemainNonWritableByDefault()
     {
-        IPlcProtocolAdapter[] adapters = [new ModbusTcpAdapter(), new FinsTcpAdapter(), new SlmpAdapter(), new S7ReadAdapter()];
+        IPlcProtocolAdapter[] adapters = [new ModbusTcpAdapter(), new FinsTcpAdapter(), new SlmpAdapter(), new S7ReadAdapter(), new InovanceModbusTcpAdapter()];
         foreach (var adapter in adapters)
         {
             var target = Target(adapter.Vendor, adapter.Transports[0], 502);

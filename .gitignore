@@ -15,3 +15,5 @@ profiles/local*.json
 *.pfx
 *.pem
 *.key
+*.obj
+data/
