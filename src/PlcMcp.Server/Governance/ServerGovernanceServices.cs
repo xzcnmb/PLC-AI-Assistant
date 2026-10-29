@@ -7,6 +7,8 @@ using PlcMcp.Engineering.Plcopen;
 using PlcMcp.Engineering.Workspace;
 using PlcMcp.Engineering.Workers.Siemens;
 using PlcMcp.Engineering.Workers.AutoShop;
+using PlcMcp.Engineering.Workers.Codesys;
+using PlcMcp.Engineering.Workers.Omron;
 using PlcMcp.Runtime.Governance;
 
 namespace PlcMcp.Server.Governance;
@@ -22,6 +24,10 @@ public sealed class ServerGovernanceServices
     public string DataRoot { get; }
     public string? SmartProjectRoot { get; }
     public IEngineeringWorker? SmartWorker { get; }
+    public CodesysWorker? CodesysWorker { get; }
+    public GxWorks3ProbeClient? GxWorks3Probe { get; }
+    public OmronInstallationDoctor OmronDoctor { get; }
+    public OmronExchangeService? OmronExchange { get; }
 
     /// <summary>
     /// AutoShop engineering bridge services; non-null only when explicitly enabled via
@@ -77,7 +83,19 @@ public sealed class ServerGovernanceServices
     /// </summary>
     public bool AllowPhysicalDownload { get; }
 
-    public ServerGovernanceServices(string dataRoot, string? smartProjectRoot = null, AutoShopBridgeConfig? autoShopBridgeConfig = null, AutoShopEnvironmentDetector? autoShopDetector = null, AutoShopSimulatorOptions? autoShopSimulatorOptions = null, IAutoShopSimulatorProcessDriver? autoShopSimulatorDriver = null, AutoShopInjectToolsOptions? autoShopInjectOptions = null, bool allowPhysicalWrite = false, bool allowPhysicalDownload = false)
+    public ServerGovernanceServices(
+        string dataRoot,
+        string? smartProjectRoot = null,
+        AutoShopBridgeConfig? autoShopBridgeConfig = null,
+        CodesysWorkerConfig? codesysConfig = null,
+        GxWorks3ProbeConfig? gxworks3Config = null,
+        GxWorks3ProbeClient? gxworks3ProbeClient = null,
+        AutoShopEnvironmentDetector? autoShopDetector = null,
+        AutoShopSimulatorOptions? autoShopSimulatorOptions = null,
+        IAutoShopSimulatorProcessDriver? autoShopSimulatorDriver = null,
+        AutoShopInjectToolsOptions? autoShopInjectOptions = null,
+        bool allowPhysicalWrite = false,
+        bool allowPhysicalDownload = false)
     {
         var root = Path.GetFullPath(dataRoot);
         DataRoot = root;
@@ -88,11 +106,30 @@ public sealed class ServerGovernanceServices
         Workspace = new ProjectWorkspaceManager(Path.Combine(root, "workspaces"));
         Jobs = new FileJobStateMachine(Path.Combine(root, "jobs"));
         Audit = new FileAuditLog(Path.Combine(root, "audit.jsonl"));
+        OmronDoctor = new OmronInstallationDoctor();
+        if (SmartProjectRoot is not null)
+        {
+            OmronExchange = new OmronExchangeService(SmartProjectRoot);
+        }
         if (SmartProjectRoot is not null)
         {
             var config = new SiemensSmartBridgeConfig(AllowedWorkspaceRoots: [SmartProjectRoot]);
             var worker = new SiemensSmartEngineeringWorker(Workspace, Doctor, config: config);
             if (worker.IsAvailable) SmartWorker = worker;
+        }
+
+if (codesysConfig is not null)
+        {
+            CodesysWorker = new CodesysWorker(codesysConfig, workspaceManager: Workspace);
+        }
+
+        if (gxworks3ProbeClient is not null)
+        {
+            GxWorks3Probe = gxworks3ProbeClient;
+        }
+        else if (gxworks3Config is not null)
+        {
+            GxWorks3Probe = new GxWorks3ProbeClient(gxworks3Config);
         }
 
         if (autoShopBridgeConfig is not null)

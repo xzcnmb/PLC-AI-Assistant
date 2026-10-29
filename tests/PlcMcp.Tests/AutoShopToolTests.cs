@@ -445,9 +445,9 @@ public sealed class AutoShopToolTests
             dataRoot,
             null,
             new AutoShopBridgeConfig(),
-            detector ?? OfflineDetector(installed: true, itpListening: false),
-            simOptions,
-            simulatorDriver ?? new FakeSimulatorDriver());
+            autoShopDetector: detector ?? OfflineDetector(installed: true, itpListening: false),
+            autoShopSimulatorOptions: simOptions,
+            autoShopSimulatorDriver: simulatorDriver ?? new FakeSimulatorDriver());
     }
 
     private static AutoShopEnvironmentDetector OfflineDetector(bool installed, bool itpListening) =>
