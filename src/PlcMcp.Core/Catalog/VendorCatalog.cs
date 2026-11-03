@@ -16,6 +16,8 @@ public static class VendorCatalog
             "Runtime Modbus profile; word order must be explicit for 32-bit values."),
         new("inovance-h-easy", PlcVendor.Inovance, 502, "H5U/H3U soft elements X/Y/M/S/T/C, D/R, DD via an explicit Modbus mapping table", true, false,
             "Runtime read profile for Inovance H5U/H3U over Modbus TCP (adapter 'inovance-modbus-tcp'); soft-element to Modbus mapping is an explicit per-model table, not verified on hardware; Experimental: loopback fixtures pass, hardware qualification pending; read-only."),
+        new("kv-comm-tcp", PlcVendor.Keyence, 8500, "DM word addresses (D100)", true, false,
+            "Runtime read profile for KEYENCE KV series over ACL/TCP (adapter keyence-acl-tcp); frame format reverse-engineered from KV STUDIO 12G 12.42.0.0 binaries (10-byte BE header + ACL body, checksum -(sum)&0xFFFF); loopback fixtures pass, hardware qualification pending; read-only."),
         new("opcua", PlcVendor.Generic, 4840, "OPC UA NodeId", false, false,
             "Planned transport only; no OPC UA client is installed in this build."),
         new("simulation", PlcVendor.Generic, 0, "semantic tag names", true, true,

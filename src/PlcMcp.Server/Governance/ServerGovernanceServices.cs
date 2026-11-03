@@ -8,6 +8,7 @@ using PlcMcp.Engineering.Workspace;
 using PlcMcp.Engineering.Workers.Siemens;
 using PlcMcp.Engineering.Workers.AutoShop;
 using PlcMcp.Engineering.Workers.Codesys;
+using PlcMcp.Engineering.Workers.Keyence;
 using PlcMcp.Engineering.Workers.Omron;
 using PlcMcp.Runtime.Governance;
 
@@ -27,6 +28,7 @@ public sealed class ServerGovernanceServices
     public CodesysWorker? CodesysWorker { get; }
     public GxWorks3ProbeClient? GxWorks3Probe { get; }
     public OmronInstallationDoctor OmronDoctor { get; }
+    public KeyenceInstallationDoctor KeyenceDoctor { get; }
     public OmronExchangeService? OmronExchange { get; }
 
     /// <summary>
@@ -107,6 +109,7 @@ public sealed class ServerGovernanceServices
         Jobs = new FileJobStateMachine(Path.Combine(root, "jobs"));
         Audit = new FileAuditLog(Path.Combine(root, "audit.jsonl"));
         OmronDoctor = new OmronInstallationDoctor();
+        KeyenceDoctor = new KeyenceInstallationDoctor();
         if (SmartProjectRoot is not null)
         {
             OmronExchange = new OmronExchangeService(SmartProjectRoot);

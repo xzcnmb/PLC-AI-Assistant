@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "line6-keyence-kv",
+      "vendor": "Keyence",
+      "family": "KV-8000",
+      "description": "基恩士 KV 只读示例（ACL 二进制协议，TCP 8500；192.0.2.60 为示例网段）。帧格式逆向自本机 KV STUDIO 12G 12.42.0.0 的 KVComm.dll/LDKCOM.dll/LbkIp.dll（证据见 kvrev/ACL_WIRE_FORMAT.md）：每帧 = 10 字节大端头 + ACL 体，头 [0..3]=BE32 总长(体+10)、[4..5]=BE16 体长、[6..7]=站号/路由字节（语义未逆向，按 0 发送）、[8..9]=BE16 校验和 -(sum(头[0..7]+体))&0xFFFF；DM 读帧 13 <地址BE16> <数量BE16>，回包 13 00 <数据BE16字>。仅支持 16 位字（Int16/UInt16，BE），32/64 位字序未逆向故不猜测；仅本机回环测试通过，真机未验证（与其它物理目标一致 canWrite=false；plc_probe_target 的 ACL_CONNECTED 仅表示 TCP 可达且 0x03 型号查询被应答）。",
+      "endpoint": {
+        "host": "192.0.2.60",
+        "port": 8500,
+        "transport": "KvCommTcp",
+        "timeoutMs": 3000
+      },
+      "tags": [
+        {
+          "name": "WordD100",
+          "nativeAddress": "D100",
+          "dataType": "Int16",
+          "canRead": true,
+          "canWrite": false,
+          "description": "DM D100 数据字（16 位有符号，单 BE16 字）。"
+        },
+        {
+          "name": "WordD101",
+          "nativeAddress": "D101",
+          "dataType": "UInt16",
+          "canRead": true,
+          "canWrite": false,
+          "description": "DM D101 数据字（16 位无符号，单 BE16 字）。"
+        },
+        {
+          "name": "WordD110",
+          "nativeAddress": "DM110",
+          "dataType": "Int16",
+          "canRead": true,
+          "canWrite": false,
+          "description": "DM110 数据字（DM 前缀等价 D110）。"
+        }
+      ]
+    }
+  ]
+}

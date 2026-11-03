@@ -562,6 +562,19 @@ public sealed class McpToolRouter
         }
         Register("plc_omron_doctor", "Reports Sysmac Studio/CX-Server files, versions, PE bitness, hashes, and static COM registration; never starts Omron software or activates COM.", true, false,
             new { type = "object", properties = new { }, required = Array.Empty<string>() }, HandleOmronDoctorAsync);
+        Register("plc_keyence_doctor", "Reports KEYENCE KV STUDIO 12G files, versions, PE bitness, hashes, and static COM registration (ACComm2, KVControl, ACCommPathMgr2); never starts KV STUDIO software or activates COM.", true, false,
+            new { type = "object", properties = new { }, required = Array.Empty<string>() }, HandleKeyenceDoctorAsync);
+        Register("plc_keyence_generate_program", "Generates a KV STUDIO MNM program module from ST source (DEVICE header must come from the target project own export; offline red-line prechecks: declaration wrappers, container injection, FBEXEC/FBEAND instance registration, timer-number reuse, reserved names). Writes the module file under the server data root.", false, false,
+            new { type = "object", properties = new {
+                source = new { type = "string", description = "ST executable statements only - no VAR/PROGRAM/FUNCTION_BLOCK wrappers, no MNM container lines." },
+                moduleName = new { type = "string", description = "^[A-Za-z_][A-Za-z0-9_]{0,47}$" },
+                category = new { type = "string", @enum = new[] { "scan", "function_block" } },
+                deviceCode = new { type = "integer", minimum = 0, maximum = 255, description = "DEVICE code from the target project export (known-good: 60 KV-X520, 59 KV-X310, 63 BOOL ladder example)." }
+            }, required = new[] { "source", "moduleName", "deviceCode" } },
+            HandleKeyenceGenerateProgramAsync);
+        Register("plc_keyence_project_snapshot", "Read-only snapshot of a KV STUDIO project directory: .kpr container header (40-byte PROJECT family), member file inventory, XML summaries (WsTreeEnv.xml / DocumentWindowInfo.xml). Never decodes encrypted payloads.", true, false,
+            new { type = "object", properties = new { projectDir = new { type = "string" } }, required = new[] { "projectDir" } },
+            HandleKeyenceProjectSnapshotAsync);
         if (_governance.OmronExchange is not null)
         {
             Register("plc_omron_exchange_inspect", "Structurally inspects IEC 61131-10/PLCopen XML or AutomationML within the bounded engineering root; no vendor compiler or import.", true, false,
@@ -747,6 +760,49 @@ public sealed class McpToolRouter
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult<object>(_governance.OmronDoctor.Diagnose());
+    }
+
+    private Task<object> HandleKeyenceDoctorAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<object>(_governance.KeyenceDoctor.Diagnose());
+    }
+
+    private async Task<object> HandleKeyenceGenerateProgramAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var source = RequireString(args, "source");
+        var moduleName = RequireString(args, "moduleName");
+        var category = args.TryGetProperty("category", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() ?? "scan" : "scan";
+        var deviceCode = args.TryGetProperty("deviceCode", out var d) && d.ValueKind == JsonValueKind.Number ? d.GetInt32() : 0;
+        var result = PlcMcp.Engineering.Workers.Keyence.KeyenceMnmGenerator.Generate(source, moduleName, deviceCode, category == "function_block");
+        if (!result.Ok)
+        {
+            return new { ok = false, error = result.Error, warnings = result.Warnings };
+        }
+
+        var dir = Path.Combine(_governance.DataRoot, "keyence-generated");
+        Directory.CreateDirectory(dir);
+        var filePath = Path.Combine(dir, moduleName + ".mnm");
+        await File.WriteAllBytesAsync(filePath, result.Payload, cancellationToken).ConfigureAwait(false);
+        return new
+        {
+            ok = true,
+            moduleName = moduleName,
+            category = category,
+            deviceCode = deviceCode,
+            encoding = result.OutputEncoding,
+            sourceLines = result.SourceLines,
+            filePath = filePath,
+            mnmBase64 = Convert.ToBase64String(result.Payload),
+            warnings = result.Warnings
+        };
+    }
+
+    private Task<object> HandleKeyenceProjectSnapshotAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var projectDir = RequireString(args, "projectDir");
+        return Task.FromResult<object>(PlcMcp.Engineering.Workers.Keyence.KeyenceProjectSnapshot.Take(projectDir));
     }
 
     private Task<object> HandleOmronExchangeInspectAsync(JsonElement args, CancellationToken cancellationToken)

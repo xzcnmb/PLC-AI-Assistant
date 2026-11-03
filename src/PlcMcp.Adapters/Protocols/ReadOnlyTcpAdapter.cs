@@ -18,7 +18,7 @@ public abstract class ReadOnlyTcpAdapter : IPlcProtocolAdapter
         new("download", CapabilityStatus.Unsupported, "Vendor engineering worker is not installed.")
     ];
 
-    public async Task<ProbeResult> ProbeAsync(TargetProfile target, CancellationToken cancellationToken = default)
+    public virtual async Task<ProbeResult> ProbeAsync(TargetProfile target, CancellationToken cancellationToken = default)
     {
         ValidateTarget(target);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

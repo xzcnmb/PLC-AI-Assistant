@@ -36,7 +36,7 @@ public static class ConfiguredPlcComposition
     {
         if (configuration.SchemaVersion != 1 || configuration.Targets is null || configuration.Targets.Count is < 1 or > 32)
             throw new ArgumentException("Configuration schemaVersion must be 1 with 1 to 32 explicit targets.");
-        IPlcProtocolAdapter[] adapters = [new S7ReadAdapter(), new FinsTcpAdapter(), new SlmpAdapter(), new ModbusTcpAdapter(), new InovanceModbusTcpAdapter()];
+        IPlcProtocolAdapter[] adapters = [new S7ReadAdapter(), new FinsTcpAdapter(), new SlmpAdapter(), new ModbusTcpAdapter(), new InovanceModbusTcpAdapter(), new KeyenceAclTcpAdapter()];
         var profiles = new List<TargetProfile>();
         var manifests = new Dictionary<string, IReadOnlyList<TagDefinition>>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in configuration.Targets)
@@ -80,6 +80,7 @@ public static class ConfiguredPlcComposition
                         else
                             ModbusTcpAdapter.BuildRead(1, 1, tag);
                         break;
+                    case TransportKind.KvCommTcp: KeyenceAclTcpAdapter.ParseAddress(tag); break;
                     case TransportKind.Fins: FinsTcpAdapter.BuildRead(1, 2, 0, 1, tag); break;
                     case TransportKind.Slmp: SlmpAdapter.BuildRead(tag); break;
                 }

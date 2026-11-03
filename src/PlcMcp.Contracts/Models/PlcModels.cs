@@ -9,6 +9,7 @@ public enum PlcVendor
     Omron,
     Mitsubishi,
     Inovance,
+    Keyence,
     Generic
 }
 
@@ -32,6 +33,7 @@ public enum TransportKind
     Fins,
     Slmp,
     ModbusTcp,
+    KvCommTcp,
     OpcUa,
     EtherNetIp,
     Simulation

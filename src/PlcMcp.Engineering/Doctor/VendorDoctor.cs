@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Win32;
 using PlcMcp.Engineering.Workers.AutoShop;
 using PlcMcp.Engineering.Workers.External;
+using PlcMcp.Engineering.Workers.Keyence;
 
 namespace PlcMcp.Engineering.Doctor;
 
@@ -17,7 +18,8 @@ public enum VendorSoftwareKind
     AutoShop,
     PlcSim,
     GxSimulator,
-    CxServer
+    CxServer,
+    Keyence
 }
 
 public sealed record VendorSoftwareReport(
@@ -30,7 +32,8 @@ public sealed record VendorSoftwareReport(
     [property: JsonPropertyName("disclaimer")] string Disclaimer = "Detection is read-only heuristic and does not imply valid vendor license or API authorization.",
     [property: JsonPropertyName("registryVersion")] string? RegistryVersion = null,
     [property: JsonPropertyName("bitness")] string? Bitness = null,
-    [property: JsonPropertyName("omronReport")] PlcMcp.Engineering.Workers.Omron.OmronDoctorReport? OmronReport = null);
+    [property: JsonPropertyName("omronReport")] PlcMcp.Engineering.Workers.Omron.OmronDoctorReport? OmronReport = null,
+    [property: JsonPropertyName("keyenceReport")] PlcMcp.Engineering.Workers.Keyence.KeyenceDoctorReport? KeyenceReport = null);
 
 public sealed record SystemDoctorReport(
     [property: JsonPropertyName("scannedAt")] DateTimeOffset ScannedAt,
@@ -74,6 +77,7 @@ private readonly AutoShopEnvironmentDetector _autoShopDetector;
             CheckSoftware(VendorSoftwareKind.Codesys),
             CheckSoftware(VendorSoftwareKind.InoProShop),
             CheckSoftware(VendorSoftwareKind.AutoShop),
+            CheckSoftware(VendorSoftwareKind.Keyence),
             CheckSoftware(VendorSoftwareKind.PlcSim),
             CheckSoftware(VendorSoftwareKind.GxSimulator)
         };
@@ -101,6 +105,7 @@ private readonly AutoShopEnvironmentDetector _autoShopDetector;
             VendorSoftwareKind.AutoShop => CheckAutoShop(),
             VendorSoftwareKind.PlcSim => CheckPlcSim(),
             VendorSoftwareKind.GxSimulator => CheckGxSimulator(),
+            VendorSoftwareKind.Keyence => CheckKeyence(),
             VendorSoftwareKind.CxServer => CheckCxServer(_customCxServerPath),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
         };
@@ -118,6 +123,31 @@ private readonly AutoShopEnvironmentDetector _autoShopDetector;
             Version: report.Version,
             Details: report.Details,
             Disclaimer: report.Disclaimer);
+    }
+
+    private static VendorSoftwareReport CheckKeyence()
+    {
+        KeyenceDoctorReport report = KeyenceInstallationDoctor.DiagnoseHost();
+        return new VendorSoftwareReport(
+            Kind: VendorSoftwareKind.Keyence,
+            Name: "KEYENCE KV STUDIO 12G",
+            Installed: report.Installed,
+            ExecutablePath: report.IdeExePath,
+            Version: report.IdeVersion,
+            Details: report.Summary,
+            RegistryVersion: report.RegistryVersion,
+            Bitness: report.IdeBitness,
+            KeyenceReport: report);
+    }
+
+    public KeyenceDoctorReport DiagnoseKeyence()
+    {
+        return KeyenceInstallationDoctor.DiagnoseHost();
+    }
+
+    public static KeyenceDoctorReport DiagnoseKeyence(string? customIdePath = null, string? customCommServerPath = null)
+    {
+        return KeyenceInstallationDoctor.DiagnoseHost(customIdePath, customCommServerPath);
     }
 
     private static VendorSoftwareReport CheckMicroWinSmart()
