@@ -54,3 +54,9 @@
 - 测试工程副本：%TEMP%\kv-work\qa2\（干净空白 KV-X520 工程，DEVICE:60）
 - 上游参考：%TEMP%\KeyenceAgentRef\ ；%TEMP%\kv-import-playbook.md（389 行 UI 操作手册）
 - 工作区 .mcp.json 已配置 windows-mcp（uvx）与 github MCP（github copilot 网关），后续子代理可优先用它们驱动 KV STUDIO / 提交
+
+## 2026-11-04 接续进展（总工验收补充）
+
+- **P0 闭环达成**：qa2 工程生成 → MNM 导入（Main，每次扫描执行型，DEVICE:60）→ 变量登记（sw/result BOOL）→ 编译转换结果 OK（总指令 2）。证据：%TEMP%\kv-evidence\p0-closed-loop-OK-20261104-101443.txt
+- **实测保留字冲突**：b、out 均报"与预约语重复，不可用"（KV 大小写不敏感），改用 sw/result 通过 → 印证上文 P1 保留字校验的必要性
+- **模拟器协议校准**：8501 ASCII 上位链路校准通过（RD/WR/RDS 实证）；8500 ACL 二进制直连探测无响应。详见 docs/keyence-simulator-protocol-calibration-2026-11-04.md

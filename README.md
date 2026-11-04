@@ -118,6 +118,8 @@ dotnet D:\PLCMCP\src\PlcMcp.Server\bin\Release\net8.0\PlcMcp.Server.dll
 
 原生工具（汇川 x86 注入桥、通信栈垫片、CryptoHost）：见 [tools/AutoShopInjectBridge/README.md](tools/AutoShopInjectBridge/README.md) 与 [tools/AutoShopNativeBridge/README.md](tools/AutoShopNativeBridge/README.md)，VS2022 v143 x86 构建，二进制产物不入仓库。
 
+Keyence 辅助工具：KV STUDIO UIA 扫描/单发操作工具 kv-uia 已入库 [tools/kv-uia/README.md](tools/kv-uia/README.md)（net48，二进制产物不入仓库）。
+
 无参数启动只加载模拟目标和基础 MCP 工具，不建立 PLC 网络连接。配置错误会直接退出，不静默回退到模拟目标。
 
 MCP 客户端配置示例（只作示例，不会自动修改客户端设置）：
