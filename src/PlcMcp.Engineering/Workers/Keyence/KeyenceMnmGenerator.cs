@@ -30,8 +30,9 @@ public sealed record KeyenceMnmResult(
 /// <summary>
 /// Builds a KV STUDIO MNM program-module container from ST source text, with
 /// offline red-line prechecks (declaration wrappers, container injection,
-/// control characters) and import warnings (FB instances, timer numbers,
-/// device code plausibility).
+/// control characters, module names colliding with KV reserved words) and
+/// import warnings (FB instances, timer numbers, device code plausibility,
+/// bare device designators in the body).
 /// </summary>
 public static class KeyenceMnmGenerator
 {
@@ -57,6 +58,51 @@ public static class KeyenceMnmGenerator
         "END_FUNCTION_BLOCK", "FUNCTION", "END_FUNCTION"
     ];
 
+    // Curated KV reserved words for module-name checking. KV STUDIO is case-insensitive and
+    // rejects names colliding with any of them when registering a variable or module
+    // (vendor dialog "与预约语重复" / "reserved word duplicate"). Composition:
+    // - observed rejected on KV STUDIO 12.42 (2026-11-04 local test): 'b' (link relay B), 'out';
+    // - same-family single-letter device class names: C counter, T timer, V, W link register,
+    //   X input, Y output, M internal relay, R edge relay, plus D;
+    // - multi-letter KV device classes: DM data memory, EM expanded memory, SD special data;
+    // - KV ST keywords: IEC 61131-3 structure/declaration keywords (OUT/IN/VAR*/IF/...),
+    //   operators, literals and standard type names.
+    // This is a deliberately conservative list, not a vendor-exhaustive one.
+    public static readonly string[] KvReservedWords =
+    [
+        // Device class names (case-insensitive exact matches).
+        "B", "C", "D", "DM", "EM", "M", "R", "SD", "T", "V", "W", "X", "Y",
+        // IO / flow-control keywords.
+        "IN", "INPUT", "OUT", "OUTPUT",
+        "IF", "THEN", "ELSIF", "ELSE", "END_IF",
+        "FOR", "TO", "DO", "BY", "WHILE", "END_WHILE",
+        "REPEAT", "UNTIL", "END_REPEAT",
+        "CASE", "END_CASE",
+        "RETURN", "EXIT", "GOTO",
+        "AND", "OR", "XOR", "NOT", "MOD",
+        "TRUE", "FALSE", "NULL",
+        // Declaration keywords (same words the body check bans as wrappers).
+        "VAR", "VAR_INPUT", "VAR_OUTPUT", "VAR_IN_OUT", "VAR_GLOBAL", "VAR_TEMP", "VAR_STAT",
+        "VAR_ACCESS", "END_VAR",
+        "PROGRAM", "END_PROGRAM", "FUNCTION", "END_FUNCTION",
+        "FUNCTION_BLOCK", "END_FUNCTION_BLOCK",
+        "TYPE", "END_TYPE", "STRUCT", "END_STRUCT", "ARRAY", "OF", "AT",
+        "CONSTANT", "INITIALIZE", "END_INITIALIZE",
+        // Standard data type names.
+        "BOOL", "BYTE", "WORD", "DWORD", "SINT", "INT", "DINT",
+        "USINT", "UINT", "UDINT", "REAL", "LREAL", "TIME", "STRING"
+    ];
+
+    private static readonly HashSet<string> KvReservedWordSet =
+        new(KvReservedWords, StringComparer.OrdinalIgnoreCase);
+
+    // Bare device designators ("prefix class + digits", e.g. DM100, W0, B1) are address
+    // aliases, not identifiers: KV-ST reaches devices only through variable-table
+    // bindings, so they never legally appear in the ST body. Longest classes first so
+    // alternation prefers DM/EM/SD over their single-letter prefixes.
+    private static readonly Regex DeviceDesignatorPattern = new(
+        @"\b(?:DM|EM|SD|B|C|D|M|R|T|V|W|X|Y)\d+\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     // Header/area lines of the container itself must never appear in the source body.
     private static readonly string[] InjectionPrefixes = ["DEVICE:", "MODULE:", "MODULE_TYPE:"];
     private static readonly string[] InjectionExactLines = ["AREA_ST", "ENDH"];
@@ -66,11 +112,12 @@ public static class KeyenceMnmGenerator
     private static readonly Regex ControlCharPattern = new("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]", RegexOptions.Compiled);
 
     /// <summary>
-    /// Builds the MNM container for one module. Validation order: module name,
-    /// device code, executable content, declaration wrappers, container injection,
-    /// control characters, module name ':' check. The first failure is returned as
-    /// Ok=false with Error set and an empty payload; otherwise all applicable
-    /// warnings are attached to an Ok=true result.
+    /// Builds the MNM container for one module. Validation order: module name shape,
+    /// module name reserved-word/device-name collision, device code, executable
+    /// content, declaration wrappers, container injection, control characters, module
+    /// name ':' check. The first failure is returned as Ok=false with Error set and an
+    /// empty payload; otherwise all applicable warnings are attached to an Ok=true
+    /// result (including bare device designators found in the statement body).
     /// </summary>
     public static KeyenceMnmResult Generate(string source, string moduleName, int deviceCode, bool functionBlock, bool utf16Le = true)
     {
@@ -86,7 +133,24 @@ public static class KeyenceMnmGenerator
                 $"Module name '{moduleName}' is invalid ({ModuleNamePatternText}).");
         }
 
-        // 2. Device code range (must come from the target project's own export).
+        // 2. Module names are registered case-insensitively by KV STUDIO and a collision
+        //    with a reserved word or a device designator is rejected there ("reserved word
+        //    duplicate", verified on KV STUDIO 12.42 for 'b' and 'out'), so refuse it hard.
+        if (KvReservedWordSet.Contains(moduleName))
+        {
+            return Fail(moduleName, moduleType, deviceCode, encodingName,
+                $"Module name '{moduleName}' collides with a KV reserved word (matching is case-insensitive); " +
+                "KV STUDIO rejects it at registration. Use a descriptive name (e.g. 'MotorCtl' instead of 'out').");
+        }
+
+        if (DeviceDesignatorPattern.IsMatch(moduleName))
+        {
+            return Fail(moduleName, moduleType, deviceCode, encodingName,
+                $"Module name '{moduleName}' is a KV device designator (class letters + number, e.g. DM100/W0/B1); " +
+                "device names are reserved by KV STUDIO. Declare a variable bound to the device instead.");
+        }
+
+        // 3. Device code range (must come from the target project's own export).
         if (deviceCode is < 0 or > 255)
         {
             return Fail(moduleName, moduleType, deviceCode, encodingName,
@@ -94,7 +158,7 @@ public static class KeyenceMnmGenerator
                 "known-good: 60 KV-X520, 59 KV-X310, 63 BOOL ladder example).");
         }
 
-        // 3. Comments and string literals stripped, something executable must remain.
+        // 4. Comments and string literals stripped, something executable must remain.
         string stripped;
         try
         {
@@ -112,7 +176,7 @@ public static class KeyenceMnmGenerator
                 "No executable ST statements (only comments/whitespace).");
         }
 
-        // 4. Declaration wrappers belong in KV STUDIO variable tables, not the body.
+        // 5. Declaration wrappers belong in KV STUDIO variable tables, not the body.
         foreach (var word in DeclarationWrapperWords)
         {
             if (Regex.IsMatch(stripped, @"\b" + word + @"\b", RegexOptions.IgnoreCase))
@@ -123,7 +187,7 @@ public static class KeyenceMnmGenerator
             }
         }
 
-        // 5. Container header/area lines must not be smuggled through the source.
+        // 6. Container header/area lines must not be smuggled through the source.
         foreach (var rawLine in GetLogicalLines(source))
         {
             string line = rawLine.Trim();
@@ -136,14 +200,14 @@ public static class KeyenceMnmGenerator
             }
         }
 
-        // 6. Control characters other than \t, \n, \r are unsupported.
+        // 7. Control characters other than \t, \n, \r are unsupported.
         if (ControlCharPattern.IsMatch(source))
         {
             return Fail(moduleName, moduleType, deviceCode, encodingName,
                 "Unsupported control character in source.");
         }
 
-        // 7. The module name is embedded literally into ";MODULE:<name>".
+        // 8. The module name is embedded literally into ";MODULE:<name>".
         if (moduleName.Contains(':', StringComparison.Ordinal))
         {
             return Fail(moduleName, moduleType, deviceCode, encodingName,
@@ -168,6 +232,23 @@ public static class KeyenceMnmGenerator
         {
             warnings.Add($"DeviceCode {deviceCode} is not in the known-good set [59,60,63]; " +
                          "take it from the target project's own export before importing.");
+        }
+
+        // Bare device designators in statements (comments/strings already stripped) are
+        // reported as a warning, not an error: most are true KV-ST violations (device
+        // access must go through a variable-table device binding), but the offline
+        // heuristic cannot see the variable table, so a user variable that happens to
+        // spell class-letters + digits (e.g. a constant named 'C100') would also match.
+        // Failing the build outright would reject sources the vendor compiler may accept.
+        var deviceHits = DeviceDesignatorPattern.Matches(stripped);
+        if (deviceHits.Count > 0)
+        {
+            var names = deviceHits.Select(m => m.Value.ToUpperInvariant()).Distinct(StringComparer.Ordinal).Take(5);
+            warnings.Add("Bare device designator(s) in body (" + string.Join(", ", names) +
+                         (deviceHits.Count > 5 ? ", ..." : "") +
+                         "): KV-ST should access devices only through variable-table entries " +
+                         "with a device binding; direct DM100/W0/B1-style addresses in the body usually " +
+                         "fail to compile or collide with the local variable scope.");
         }
 
         var lines = new List<string>
