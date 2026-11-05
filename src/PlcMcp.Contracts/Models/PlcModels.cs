@@ -34,6 +34,7 @@ public enum TransportKind
     Slmp,
     ModbusTcp,
     KvCommTcp,
+    KvHostLinkTcp,
     OpcUa,
     EtherNetIp,
     Simulation

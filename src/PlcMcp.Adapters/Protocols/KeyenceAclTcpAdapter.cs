@@ -157,7 +157,10 @@ public sealed class KeyenceAclTcpAdapter : ReadOnlyTcpAdapter
         return words;
     }
 
-    private static ushort ParseDmAddress(string address)
+    /// <summary>
+    /// Parses a Keyence DM word address string (e.g. "1234", "D1234", "DM1234") into a 0..65535 word number.
+    /// </summary>
+    public static ushort ParseDmAddress(string address)
     {
         // ACL treats DM as a plain decimal word number; accept "1234", "D1234" or "DM1234".
         var s = address.Trim();

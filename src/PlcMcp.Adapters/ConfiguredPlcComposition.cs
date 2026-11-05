@@ -36,7 +36,7 @@ public static class ConfiguredPlcComposition
     {
         if (configuration.SchemaVersion != 1 || configuration.Targets is null || configuration.Targets.Count is < 1 or > 32)
             throw new ArgumentException("Configuration schemaVersion must be 1 with 1 to 32 explicit targets.");
-        IPlcProtocolAdapter[] adapters = [new S7ReadAdapter(), new FinsTcpAdapter(), new SlmpAdapter(), new ModbusTcpAdapter(), new InovanceModbusTcpAdapter(), new KeyenceAclTcpAdapter()];
+        IPlcProtocolAdapter[] adapters = [new S7ReadAdapter(), new FinsTcpAdapter(), new SlmpAdapter(), new ModbusTcpAdapter(), new InovanceModbusTcpAdapter(), new KeyenceAclTcpAdapter(), new KeyenceHostLinkTcpAdapter()];
         var profiles = new List<TargetProfile>();
         var manifests = new Dictionary<string, IReadOnlyList<TagDefinition>>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in configuration.Targets)
@@ -57,8 +57,8 @@ public static class ConfiguredPlcComposition
             if (ep.Transport == TransportKind.Slmp && ep.Unit is not (null or 0))
                 throw new ArgumentException("SLMP only supports local station 0.");
             // Several adapters can share a transport (ModbusTcp is served by the generic and
-            // the Inovance profile); prefer the vendor-specific adapter, then the generic one.
-            var adapter = SelectAdapter(adapters, ep.Transport, entry.Vendor);
+            // the Inovance profile; KvCommTcp serves both ACL and HostLink).
+            var adapter = SelectAdapter(adapters, ep.Transport, entry.Vendor, ep.Port);
             if (adapter.Vendor != PlcVendor.Generic && adapter.Vendor != entry.Vendor)
                 throw new ArgumentException("Target vendor does not match selected protocol adapter.");
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -80,7 +80,13 @@ public static class ConfiguredPlcComposition
                         else
                             ModbusTcpAdapter.BuildRead(1, 1, tag);
                         break;
-                    case TransportKind.KvCommTcp: KeyenceAclTcpAdapter.ParseAddress(tag); break;
+                    case TransportKind.KvCommTcp:
+                        if (adapter is KeyenceHostLinkTcpAdapter)
+                            KeyenceHostLinkTcpAdapter.ParseAddress(tag);
+                        else
+                            KeyenceAclTcpAdapter.ParseAddress(tag);
+                        break;
+                    case TransportKind.KvHostLinkTcp: KeyenceHostLinkTcpAdapter.ParseAddress(tag); break;
                     case TransportKind.Fins: FinsTcpAdapter.BuildRead(1, 2, 0, 1, tag); break;
                     case TransportKind.Slmp: SlmpAdapter.BuildRead(tag); break;
                 }
@@ -94,13 +100,23 @@ public static class ConfiguredPlcComposition
             new SafetyPolicy("physical-readonly", allowSimulationWrites: false), new PlanStore(), audit), audit);
     }
 
-    // Prefers a vendor-specific adapter for the transport (Inovance Modbus TCP), then falls
-    // back to the generic adapter. Behaviour for the existing single-adapter transports is
-    // unchanged.
-    internal static IPlcProtocolAdapter SelectAdapter(IReadOnlyList<IPlcProtocolAdapter> adapters,
-        TransportKind transport, PlcVendor vendor)
+    // Prefers a vendor-specific adapter for the transport (Inovance Modbus TCP, Keyence HostLink/ACL), then falls
+    // back to the generic adapter. For Keyence KvCommTcp, port 8501 selects HostLink ASCII, while default/8500
+    // selects ACL binary. KvHostLinkTcp directly selects KeyenceHostLinkTcpAdapter.
+    public static IPlcProtocolAdapter SelectAdapter(IReadOnlyList<IPlcProtocolAdapter> adapters,
+        TransportKind transport, PlcVendor vendor, int? port = null)
     {
         var candidates = adapters.Where(a => a.Transports.Contains(transport)).ToArray();
+        if (transport == TransportKind.KvCommTcp && vendor == PlcVendor.Keyence)
+        {
+            if (port == KeyenceHostLinkTcpAdapter.DefaultPort)
+            {
+                var hl = candidates.OfType<KeyenceHostLinkTcpAdapter>().FirstOrDefault();
+                if (hl is not null) return hl;
+            }
+            var acl = candidates.OfType<KeyenceAclTcpAdapter>().FirstOrDefault();
+            if (acl is not null) return acl;
+        }
         return candidates.FirstOrDefault(a => a.Vendor == vendor)
             ?? candidates.FirstOrDefault(a => a.Vendor == PlcVendor.Generic)
             ?? throw new NotSupportedException($"Transport '{transport}' has no installed read adapter. OPC UA/CIP remain planned capabilities.");
@@ -111,7 +127,7 @@ public sealed class ProtocolRuntimeClient(IEnumerable<IPlcProtocolAdapter> adapt
 {
     private readonly IPlcProtocolAdapter[] _adapters = adapters.ToArray();
     private IPlcProtocolAdapter For(TargetProfile target) =>
-        ConfiguredPlcComposition.SelectAdapter(_adapters, target.Endpoint.Transport, target.Vendor);
+        ConfiguredPlcComposition.SelectAdapter(_adapters, target.Endpoint.Transport, target.Vendor, target.Endpoint.Port);
     public Task<ProbeResult> ProbeAsync(TargetProfile target, CancellationToken cancellationToken = default) => For(target).ProbeAsync(target, cancellationToken);
     public Task<IReadOnlyList<TagValue>> ReadAsync(TargetProfile target, IReadOnlyList<TagDefinition> tags, CancellationToken cancellationToken = default) => For(target).ReadAsync(target, tags, cancellationToken);
     public Task<TagValue> WriteAsync(TargetProfile target, TagDefinition tag, object value, CancellationToken cancellationToken = default) =>
