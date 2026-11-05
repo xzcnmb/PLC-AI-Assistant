@@ -217,4 +217,18 @@ AutoShop（V4.12.0.2）集成所用接口为**逆向所得、无厂商背书、�
 | 真机 PLC 下载 / 真机 CPU RUN-STOP / 真机元件写 | `Unsupported` | 一切实验仅 127.0.0.1：D1 协议客户端与 Modbus 写服务均硬拒非回环目标（物理开关默认关且打开后深层红线仍拒）；真机下载状态机、装载链、CPU RUN/STOP 通道与映射表均未验证 |
 | 插件框架 / 原生通信栈直调 | `Unsupported` | 仅归档情报/证据；布局与版本强绑定，本版无 MCP 工具 |
 
+## 12. 基恩士运行时（Keyence runtime）
+
+基恩士 KV 系列支持两种 TCP 适配器：
+1. **8501 端口上位链路 ASCII 协议**（`keyence-hostlink-tcp`，对应 `KvHostLinkTcp` 或 `KvCommTcp` 指定端口 8501）：
+   - 通信机制：直接使用 TCP 连接 8501 端口，发送以 `\r` (CR) 结尾的文本命令，读回文本行应答；
+   - 指令集支持：`RD DM{addr}\r`（单字读，5 位十进制应答）、`RDS DM{addr} {count}\r`（多字连续读，空格分隔 5 位十进制）、`WR DM{addr} {val}\r`（单字写，支持负数如 `-567`，成功应答 `OK`）；
+   - 连续地址合并：多个连续 DM 软元件自动合并为一条 `RDS` 帧批量读取（单帧上限 125 字），应答按 tag 顺序正确映射；
+   - 容错解析：应答容忍以 `\r\n` 或 `\r` 结尾以及尾随空白；
+   - 实测证据：已在 KV STUDIO 12.42 模拟器（`ACCommServer2.exe`，HostLinkPortNo 8501）实测校准通过；在物理配置下 `canWrite=false`。
+2. **8500 端口 ACL 二进制协议**（`keyence-acl-tcp`，对应 `KvCommTcp` 端口 8500）：
+   - 帧结构：10 字节大端头 + ACL 体，携带校验和；
+   - 状态：纯直连裸帧在模拟器上无响应（需会话级握手逆向），当前定位为 Experimental。
+
+
 治理边界：模拟器 start/stop 属本地软件进程操作（非 PLC 动作），无需审批 token，但有重复启动防护、日志落盘、有界超时，失败不会伪装成功；所有探活仅限 127.0.0.1，任何非回环连接都被拒绝。`plc_autoshop_download`/`plc_autoshop_run_stop` 属 PLC 动作（destructive）：**默认仅回环模拟器目标可达**，真机目标须 `--autoshop-allow-physical-download`（默认关）+ 运维审批，且本版协议客户端的深层回环红线对非回环端点一律拒发——真机下载/RUN-STOP 在本 Server 实际不可达、维持未验证声明；经 AutoShop 的元件写/强制仍无任何执行入口。注入实例与实验 daemon 一律自启自清；下载载荷只落模拟器工作区副本，安装目录零写入（G2 复核）。
