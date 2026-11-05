@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "line6-keyence-kv-hostlink",
+      "vendor": "Keyence",
+      "family": "KV-8000",
+      "description": "基恩士 KV 上位链路 ASCII 示例（HostLink 协议，TCP 8501；192.0.2.60 为示例网段）。文本命令以 CR 结尾，RD 单字读、RDS 连续字批量读、WR 单字写；经本机 KV STUDIO 12.42 模拟器实测校准。在物理配置下 canWrite=false。",
+      "endpoint": {
+        "host": "192.0.2.60",
+        "port": 8501,
+        "transport": "KvHostLinkTcp",
+        "timeoutMs": 3000
+      },
+      "tags": [
+        {
+          "name": "WordD100",
+          "nativeAddress": "D100",
+          "dataType": "Int16",
+          "canRead": true,
+          "canWrite": false,
+          "description": "DM D100 数据字（16 位有符号）。"
+        },
+        {
+          "name": "WordD101",
+          "nativeAddress": "D101",
+          "dataType": "UInt16",
+          "canRead": true,
+          "canWrite": false,
+          "description": "DM D101 数据字（16 位无符号）。"
+        },
+        {
+          "name": "WordD110",
+          "nativeAddress": "DM110",
+          "dataType": "Int16",
+          "canRead": true,
+          "canWrite": false,
+          "description": "DM110 数据字（DM 前缀等价 D110）。"
+        }
+      ]
+    }
+  ]
+}
