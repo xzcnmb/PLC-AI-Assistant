@@ -143,6 +143,7 @@ MCP 客户端配置示例（只作示例，不会自动修改客户端设置）�
 - FINS：仅本地网络 TCP，32/64 位变量显式设置 byteOrder；没有 UDP、EM bank 或跨网路由配置。
 - SLMP：仅 binary 3E、本地站；X/Y/W/B 号码按十六进制，D/R/M 按十进制。
 - Modbus：`HR100` 是零基保持寄存器 100；32/64 位值要求 byteOrder。
+- Keyence：支持 8501 上位链路 ASCII 协议（`KvHostLinkTcp` 或 `KvCommTcp:8501`）与 8500 ACL 二进制（`KvCommTcp:8500`）；DM 软元件 16 位字读写（RD/RDS/WR，回环校准通过）。
 - Inovance：软元件 D/R/M/X/Y/S/T/C/DD 经显式映射表（H5U/H3U）转换，不做隐式换算；32/64 位值必须显式 byteOrder；`C` 前缀在汇川目标上按计数器软元件解析。
 - byteOrder：BigEndian/ABCD、LittleEndian/DCBA、WordSwap/CDAB、ByteSwap/BADC。
 
