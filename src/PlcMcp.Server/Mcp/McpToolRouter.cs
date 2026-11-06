@@ -575,6 +575,24 @@ public sealed class McpToolRouter
         Register("plc_keyence_project_snapshot", "Read-only snapshot of a KV STUDIO project directory: .kpr container header (40-byte PROJECT family), member file inventory, XML summaries (WsTreeEnv.xml / DocumentWindowInfo.xml). Never decodes encrypted payloads.", true, false,
             new { type = "object", properties = new { projectDir = new { type = "string" } }, required = new[] { "projectDir" } },
             HandleKeyenceProjectSnapshotAsync);
+        if (_governance.KeyenceDeploy is not null)
+        {
+            Register("plc_keyence_deploy_program", "One-step KEYENCE KV STUDIO deploy (behind --keyence-deploy): ST source -> MNM generation (offline red-line prechecks) -> gated PowerShell deployment script (scripts/kv_studio_deploy.ps1 drives KV STUDIO import, variable-table registration, Ctrl+F9 conversion and project save). Returns the five-gate report (mnm/import/variables/compile/persist) with parsed compile errors, messages and file paths; cross-checks persistence with an independent directory fingerprint. Operates only on the passed project directory (use a project copy; the KV STUDIO installation directory is refused); never contacts a PLC, never downloads, never RUN/STOP. The script is owned separately - a missing script is reported as an environment failure, not faked.", false, false,
+                new { type = "object", properties = new {
+                    source = new { type = "string", description = "ST executable statements only - no VAR/PROGRAM/FUNCTION_BLOCK wrappers, no MNM container lines (same red lines as plc_keyence_generate_program)." },
+                    moduleName = new { type = "string", description = "^[A-Za-z_][A-Za-z0-9_]{0,47}$" },
+                    deviceCode = new { type = "integer", minimum = 0, maximum = 255, description = "DEVICE code from the target project export (known-good: 60 KV-X520, 59 KV-X310, 63 BOOL ladder example)." },
+                    category = new { type = "string", @enum = new[] { "scan", "function_block" } },
+                    projectDir = new { type = "string", description = "Absolute path of the KV STUDIO project directory to deploy into (a copy; must not be inside the KV STUDIO installation directory)." },
+                    variables = new { type = "array", description = "Optional variable-table rows registered before compiling.", items = new { type = "object", properties = new { name = new { type = "string" }, dataType = new { type = "string" } }, required = new[] { "name", "dataType" } } },
+                    kvsExe = new { type = "string", description = "Optional Kvs.exe path override (default: --keyence-kvs-exe, else the doctor's known 12G location)." },
+                    kvUia = new { type = "string", description = "Optional kv-uia.exe path forwarded to the deployment script." },
+                    waitCompileSeconds = new { type = "integer", minimum = 5, maximum = 600, description = "Seconds the script waits for the conversion result (default 40)." },
+                    outDir = new { type = "string", description = "Absolute output directory for the generated MNM, variables TSV and kv-deploy-result.json (default %TEMP%\\kv-deploy)." },
+                    dryRun = new { type = "boolean", description = "Pass -DryRun to the script: discovery without IDE mutations (default false)." }
+                }, required = new[] { "source", "moduleName", "deviceCode", "projectDir" } },
+                HandleKeyenceDeployProgramAsync);
+        }
         if (_governance.OmronExchange is not null)
         {
             Register("plc_omron_exchange_inspect", "Structurally inspects IEC 61131-10/PLCopen XML or AutomationML within the bounded engineering root; no vendor compiler or import.", true, false,
@@ -803,6 +821,105 @@ public sealed class McpToolRouter
         cancellationToken.ThrowIfCancellationRequested();
         var projectDir = RequireString(args, "projectDir");
         return Task.FromResult<object>(PlcMcp.Engineering.Workers.Keyence.KeyenceProjectSnapshot.Take(projectDir));
+    }
+
+    private async Task<object> HandleKeyenceDeployProgramAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var deploy = _governance.KeyenceDeploy ?? throw new NotSupportedException(
+            "KV deploy is not enabled; pass --keyence-deploy to opt in.");
+
+        var source = RequireString(args, "source");
+        var moduleName = RequireString(args, "moduleName");
+        var projectDir = RequireString(args, "projectDir", "project_path");
+        var category = TryGetString(args, "category") ?? "scan";
+        if (category is not ("scan" or "function_block"))
+        {
+            throw new ArgumentException("Parameter 'category' must be one of: scan, function_block.");
+        }
+
+        var deviceCode = args.TryGetProperty("deviceCode", out var d) && d.ValueKind == JsonValueKind.Number
+            ? d.GetInt32()
+            : throw new ArgumentException("Parameter 'deviceCode' must be provided as an integer 0..255.");
+        var waitCompileSeconds = ReadBoundedInteger(args, "waitCompileSeconds", 40, 5, 600);
+        var dryRun = args.TryGetProperty("dryRun", out var dr) && dr.ValueKind == JsonValueKind.True;
+
+        List<PlcMcp.Engineering.Workers.Keyence.KeyenceDeployVariable>? variables = null;
+        if (args.TryGetProperty("variables", out var variablesElement) && variablesElement.ValueKind == JsonValueKind.Array)
+        {
+            variables = [];
+            foreach (var item in variablesElement.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                {
+                    throw new ArgumentException("Elements in array 'variables' must be objects with name/dataType.");
+                }
+
+                var name = RequireString(item, "name");
+                var dataType = RequireString(item, "dataType");
+                variables.Add(new(name, dataType));
+            }
+
+            if (variables.Count == 0)
+            {
+                throw new ArgumentException("Parameter 'variables' cannot be an empty array; omit it for no registration.");
+            }
+        }
+
+        var options = _governance.KeyenceDeployOptions;
+        var kvsExe = TryGetString(args, "kvsExe", "kvs_exe") ?? options?.KvsExe;
+        var kvUia = TryGetString(args, "kvUia", "kv_uia") ?? options?.KvUia;
+
+        // Doctor-lite: refuse early with explicit guidance when Kvs.exe is absent (dry runs skip it;
+        // the orchestrator re-checks per the environment gate either way).
+        if (!dryRun)
+        {
+            var resolvedKvs = Path.GetFullPath(kvsExe ?? PlcMcp.Engineering.Workers.Keyence.KeyenceInstallationDoctor.DefaultIdeExePath);
+            if (!File.Exists(resolvedKvs))
+            {
+                return new
+                {
+                    ok = false,
+                    error = $"Kvs.exe not found at '{resolvedKvs}'. Pass kvsExe or configure --keyence-kvs-exe; " +
+                            "run plc_keyence_doctor for installation evidence; gates 2-5 were not attempted.",
+                    doctor = new { installed = false, ideExePath = resolvedKvs }
+                };
+            }
+        }
+
+        var request = new PlcMcp.Engineering.Workers.Keyence.KeyenceDeployRequest
+        {
+            Source = source,
+            ModuleName = moduleName,
+            DeviceCode = deviceCode,
+            Category = category,
+            ProjectDir = projectDir,
+            Variables = variables,
+            KvsExe = kvsExe,
+            KvUia = kvUia,
+            WaitCompileSeconds = waitCompileSeconds,
+            OutDir = TryGetString(args, "outDir", "out_dir"),
+            DryRun = dryRun,
+            ScriptPath = options?.ScriptPath
+        };
+
+        var report = await deploy.RunAsync(request, cancellationToken).ConfigureAwait(false);
+        return new
+        {
+            ok = report.Passed,
+            passed = report.Passed,
+            stages = report.Stages,
+            projectDir = report.ProjectDir,
+            moduleName = report.ModuleName,
+            outputDir = report.OutputDir,
+            mnmPath = report.MnmPath,
+            compile = report.Compile,
+            errors = report.Errors,
+            messages = report.Messages,
+            warnings = report.Warnings,
+            fatalError = report.FatalError,
+            exitCode = report.ExitCode,
+            detail = report.Detail
+        };
     }
 
     private Task<object> HandleOmronExchangeInspectAsync(JsonElement args, CancellationToken cancellationToken)
