@@ -16,21 +16,23 @@ public class KeyenceMnmGeneratorTests
     [Fact]
     public void Generate_ScanProgram_BuildsGoldenUtf16LeContainer()
     {
-        var result = KeyenceMnmGenerator.Generate("IF b THEN\r\n  out := 1;\r\nEND_IF", "Main", DeviceCode, functionBlock: false);
+        // 'out' is a KV reserved word and now fails the body variable check (KV STUDIO
+        // 12.42 rejected 'out :=' at variable registration); the golden body uses 'sw'.
+        var result = KeyenceMnmGenerator.Generate("IF b THEN\r\n  sw := 1;\r\nEND_IF", "Main", DeviceCode, functionBlock: false);
 
         Assert.True(result.Ok);
         Assert.Equal(0xFF, result.Payload[0]);
         Assert.Equal(0xFE, result.Payload[1]);
         Assert.Equal("Utf16Le", result.OutputEncoding);
         Assert.Equal(3, result.SourceLines);
-        Assert.Equal("DEVICE:60\r\n;MODULE:Main\r\n;MODULE_TYPE:0\r\nAREA_ST\r\n;IF b THEN\r\n;  out := 1;\r\n;END_IF\r\nEND\r\nENDH\r\n",
+        Assert.Equal("DEVICE:60\r\n;MODULE:Main\r\n;MODULE_TYPE:0\r\nAREA_ST\r\n;IF b THEN\r\n;  sw := 1;\r\n;END_IF\r\nEND\r\nENDH\r\n",
             DecodeUtf16(result));
     }
 
     [Fact]
     public void Generate_FunctionBlock_WritesModuleType2()
     {
-        var result = KeyenceMnmGenerator.Generate("out := 1;", "MyFb", DeviceCode, functionBlock: true);
+        var result = KeyenceMnmGenerator.Generate("sw := 1;", "MyFb", DeviceCode, functionBlock: true);
 
         Assert.True(result.Ok);
         Assert.Contains(";MODULE_TYPE:2", DecodeUtf16(result));
@@ -43,7 +45,7 @@ public class KeyenceMnmGeneratorTests
     [InlineData("")]
     public void Generate_InvalidModuleName_Fails(string moduleName)
     {
-        var result = KeyenceMnmGenerator.Generate("out := 1;", moduleName, DeviceCode, functionBlock: false);
+        var result = KeyenceMnmGenerator.Generate("sw := 1;", moduleName, DeviceCode, functionBlock: false);
 
         Assert.False(result.Ok);
         Assert.NotNull(result.Error);
@@ -108,7 +110,7 @@ public class KeyenceMnmGeneratorTests
     [Fact]
     public void Generate_Utf8Mode_HasNoBomAndKeepsContainer()
     {
-        var result = KeyenceMnmGenerator.Generate("out := 1;", "Main", DeviceCode, functionBlock: false, utf16Le: false);
+        var result = KeyenceMnmGenerator.Generate("sw := 1;", "Main", DeviceCode, functionBlock: false, utf16Le: false);
 
         Assert.True(result.Ok);
         Assert.Equal("Utf8", result.OutputEncoding);
@@ -119,7 +121,7 @@ public class KeyenceMnmGeneratorTests
     [Fact]
     public void Generate_SourceLinesArePrefixedVerbatim_IncludingCommentLines()
     {
-        var result = KeyenceMnmGenerator.Generate("out := 1;\r\n// note\r\nEND_IF", "Main", DeviceCode, functionBlock: false);
+        var result = KeyenceMnmGenerator.Generate("sw := 1;\r\n// note\r\nEND_IF", "Main", DeviceCode, functionBlock: false);
 
         Assert.True(result.Ok);
         Assert.Contains(";// note", DecodeUtf16(result));
@@ -162,20 +164,36 @@ public class KeyenceMnmGeneratorTests
         Assert.Contains("device designator", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
-    // Bare device designators in the statement body: KV-ST should reach devices only via
-    // variable-table bindings. Warning, not Error - see the generator comment for the
-    // rationale (a user variable like C100 would also match the pattern offline).
+    // Bare device designators used as values in the statement body: KV-ST should reach
+    // devices only via variable-table bindings. Warning, not Error - see the generator
+    // comment for the rationale (a user variable like C100 would also match offline).
     [Fact]
     public void Generate_BareDeviceDesignatorInBody_Warns()
     {
-        var result = KeyenceMnmGenerator.Generate("DM100 := 1;\r\nsw := 2;", "Main", DeviceCode, functionBlock: false);
+        var result = KeyenceMnmGenerator.Generate("sw := DM100;\r\nresult := 2;", "Main", DeviceCode, functionBlock: false);
 
         Assert.True(result.Ok);
         Assert.Contains(result.Warnings, w => w.Contains("device designator", StringComparison.OrdinalIgnoreCase));
     }
 
-    // Comments and string literals are stripped before the designator scan, so mentions
-    // of DM100 there must not warn (mirrors how the declaration-wrapper check behaves).
+    // A bare device designator on the LEFT of ':=' is a direct device-address assignment,
+    // which KV-ST forbids outright (verified decision 2026-11-06): hard FAIL, unlike the
+    // right-side value case above which stays a warning.
+    [Theory]
+    [InlineData("DM100 := 1;")]
+    [InlineData("sw := 2;\r\nW0 := DM5;")]
+    [InlineData("b1 := TRUE;")]
+    public void Generate_BareDeviceDesignatorAsAssignmentTarget_Fails(string source)
+    {
+        var result = KeyenceMnmGenerator.Generate(source, "Main", DeviceCode, functionBlock: false);
+
+        Assert.False(result.Ok);
+        Assert.Contains("bare KV device designator", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.Payload);
+    }
+
+    // Comments and string literals are stripped before every body scan, so a reserved
+    // word or designator there must not fail or warn.
     [Fact]
     public void Generate_DeviceDesignatorInCommentOrString_NoWarning()
     {
@@ -187,8 +205,27 @@ public class KeyenceMnmGeneratorTests
         Assert.DoesNotContain(result.Warnings, w => w.Contains("device designator", StringComparison.OrdinalIgnoreCase));
     }
 
-    // The 2026-11-04 KV STUDIO 12.42 regression: renaming b/out to sw/result compiled and
-    // converted cleanly, so such sources must pass with no reserved-word warnings at all.
+    // ST variable registration reserved-word check (KV STUDIO 12.42 live finding
+    // 2026-11-06): 'out' as an assignment target is rejected by the variable table
+    // ("与预约语重复"), so the offline precheck must fail it before importing. Matching
+    // is case-insensitive like KV STUDIO itself.
+    [Theory]
+    [InlineData("out := 1;")]
+    [InlineData("OUT := 1;")]
+    [InlineData("b := 1;")]
+    [InlineData("m := 2;")]
+    public void Generate_BodyVariableNameIsReservedWord_Fails(string source)
+    {
+        var result = KeyenceMnmGenerator.Generate(source, "Main", DeviceCode, functionBlock: false);
+
+        Assert.False(result.Ok);
+        Assert.NotNull(result.Error);
+        Assert.Contains("reserved word", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.Payload);
+    }
+
+    // 'result' was verified safe on KV STUDIO 12.42 (renamed b/out -> sw/result compiled
+    // cleanly), so reserved-word-looking-but-safe names must pass with no failure.
     [Fact]
     public void Generate_SwAndResultBody_CleanPass()
     {
@@ -196,5 +233,67 @@ public class KeyenceMnmGeneratorTests
 
         Assert.True(result.Ok);
         Assert.Empty(result.Warnings);
+    }
+
+    // Reserved words that only appear as operators/values (not ':=' targets) must not
+    // trip the variable-name check: 'result := sw AND flag' was the P0 live-verified body.
+    [Fact]
+    public void Generate_ReservedWordsAsValuesDoNotFail()
+    {
+        var result = KeyenceMnmGenerator.Generate("sw := TRUE;\r\nresult := sw AND flag;", "MotorCtl", DeviceCode, functionBlock: false);
+
+        Assert.True(result.Ok);
+    }
+
+    // Statement-terminator normalization (KV STUDIO 12.42 live finding 2026-11-06):
+    // assignment lines missing the trailing ';' gain it in the container body; lines
+    // that already have it and block keywords stay byte-identical.
+    [Fact]
+    public void Generate_MissingSemicolonOnAssignment_AutoAppendsAndWarns()
+    {
+        var result = KeyenceMnmGenerator.Generate("result := TRUE\r\nsw := FALSE;", "Main", DeviceCode, functionBlock: false);
+
+        Assert.True(result.Ok);
+        Assert.Contains(";result := TRUE;", DecodeUtf16(result));
+        Assert.Contains(";sw := FALSE;", DecodeUtf16(result));
+        Assert.Contains(result.Warnings, w => w.Contains("Auto-appended missing ';'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Generate_BlockKeywordsAndExistingTerminators_Untouched()
+    {
+        var result = KeyenceMnmGenerator.Generate(
+            "IF sw THEN\r\n  result := 1;\r\nEND_IF\r\nFOR i := 1 TO 5 DO\r\nEND_FOR",
+            "Main", DeviceCode, functionBlock: false);
+
+        Assert.True(result.Ok);
+        string text = DecodeUtf16(result);
+        Assert.Contains(";IF sw THEN", text);                   // no ';' added to IF
+        Assert.Contains(";  result := 1;", text);               // existing ';' untouched (no doubling)
+        Assert.DoesNotContain("result := 1;;", text);
+        Assert.Contains(";END_IF", text);
+        Assert.Contains(";FOR i := 1 TO 5 DO", text);           // compound header with ':=' stays verbatim
+        Assert.DoesNotContain("TO 5 DO;", text);
+        Assert.Empty(result.Warnings);                          // nothing was fixed
+    }
+
+    [Fact]
+    public void Generate_MultiLineContinuationAssignment_Untouched()
+    {
+        var result = KeyenceMnmGenerator.Generate("result := sw AND\r\nflag", "Main", DeviceCode, functionBlock: false);
+
+        Assert.True(result.Ok);
+        Assert.Contains(";result := sw AND", DecodeUtf16(result));   // ends in continuation word: no ';'
+        Assert.Contains(";flag", DecodeUtf16(result));
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void Generate_TrailingLineCommentAfterAssignment_SemicolonBeforeComment()
+    {
+        var result = KeyenceMnmGenerator.Generate("sw := 1  // set switch", "Main", DeviceCode, functionBlock: false);
+
+        Assert.True(result.Ok);
+        Assert.Contains(";sw := 1;  // set switch", DecodeUtf16(result));
     }
 }

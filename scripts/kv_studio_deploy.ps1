@@ -451,14 +451,46 @@ function Invoke-VariablesGate($rows) {
     $tab = Invoke-KvUia -Pattern '^局部$' -ProcessId $script:KvsPid -InvokeUia
     if (-not (Test-UiaActed $tab)) { Invoke-KvUia -Pattern '局部' -ProcessId $script:KvsPid -InvokeUia | Out-Null }
     Start-Sleep -Milliseconds 600
-    # 模块选择 (_comboBoxModuleName): 选目标 -> 回车. kv-uia 无 AutomationId/SelectionItem, 首击
-    # 可能命中树项而非 combo; combo 现值==目标时 Name 命中即选中, 最终以回读/编译 214 判据兜底.
-    $mod = Invoke-KvUia -Pattern ('^' + [regex]::Escape($ModuleName) + '$') -ProcessId $script:KvsPid -InvokeUia
-    if (Test-UiaHit $mod) {
-        Invoke-KvUia -Pattern ('^' + [regex]::Escape($ModuleName) + '$') -ProcessId $script:KvsPid -InvokeUia | Out-Null
-        Send-Keys '{ENTER}' | Out-Null
+    # [OCR-2] 模块选择 (_comboBoxModuleName, UIA Name '选择程序(M)'): 局部变量必须先切到目标模块,
+    # 否则粘贴落进别的模块 (KV STUDIO 12.42 实机 2026-11-06 修复).
+    $modRx = '^' + [regex]::Escape($ModuleName) + '$'
+    $comboPresent = Test-UiaHit (Invoke-KvUia -Pattern '^选择程序\(M\)$' -ProcessId $script:KvsPid)
+    if (-not $comboPresent) {
+        Add-Message '警告: 未扫到 选择程序(M) 下拉 (界面版本差异?), 沿用原流程, 依赖回读验证'
+    } elseif (Test-UiaHit (Invoke-KvUia -Pattern $modRx -ProcessId $script:KvsPid)) {
+        Write-Log 'module-select 跳过: 回读已含目标模块名'
+        $script:ImportDetail.dialogs.Add('module-select [skip-readback]')
     } else {
-        Add-Message '警告: 未扫到目标模块名 (下拉当前值), 依赖后续回读验证'
+        # 主路径: %m 加速键聚焦 选择程序(M) 下拉 -> SendKeys 输模块名 (type-ahead 选中) -> {ENTER} 提交.
+        # 旧的 "盲点 ^ModuleName$ (下拉现值==目标才命中)" 已删除: 实机场景 (现值 Main, 目标 MotorCtl)
+        # 根本没命中 -> 下拉从未切换.
+        Ensure-CapsLockOn                            # type-ahead 是字母, 中文 IME 下必须先 Latin
+        Send-Keys '%m' | Out-Null                       # 聚焦 选择程序(M) 下拉
+        Start-Sleep -Milliseconds 300
+        Send-Keys $ModuleName | Out-Null                # type-ahead 跳到目标项 (模块名仅 [A-Za-z0-9_], 无 SendKeys 特殊字符)
+        Start-Sleep -Milliseconds 200
+        Send-Keys '{ENTER}' | Out-Null
+        $script:ImportDetail.dialogs.Add('module-select [accel+m+typeahead]')
+        Start-Sleep -Milliseconds 400
+        if (-not (Test-UiaHit (Invoke-KvUia -Pattern $modRx -ProcessId $script:KvsPid))) {
+            # 兜底: UIA 展开 选择程序(M) 下拉 (INVOKED|EXPANDED) -> type-ahead 输模块名 -> {ENTER}
+            $exp = Invoke-KvUia -Pattern '^选择程序\(M\)$' -ProcessId $script:KvsPid -InvokeUia
+            if ($exp -match 'INVOKED|EXPANDED') {
+                Start-Sleep -Milliseconds 400
+                Send-Keys $ModuleName | Out-Null
+                Start-Sleep -Milliseconds 200
+                Send-Keys '{ENTER}' | Out-Null
+                $script:ImportDetail.dialogs.Add('module-select [expand+typeahead]')
+                Start-Sleep -Milliseconds 400
+            }
+            if (-not (Test-UiaHit (Invoke-KvUia -Pattern $modRx -ProcessId $script:KvsPid))) {
+                Add-Message ('警告: 切换 选择程序(M) 到 ' + $ModuleName + ' 后回读未证实, 由变量网格回读/编译 214 兜底')
+            } else {
+                Write-Log ('module-select 完成: 回读命中 ' + $ModuleName)
+            }
+        } else {
+            Write-Log ('module-select 完成: 回读命中 ' + $ModuleName)
+        }
     }
     Start-Sleep -Milliseconds 400
     # 网格聚焦锚定 (C 节验证路径): %l 过滤框 -> +{TAB} x<=3 -> Ctrl+Home. UIA SetFocus/点击 _grid
@@ -544,12 +576,27 @@ function Invoke-CompileGate() {
     Send-Keys '%a' | Out-Null
     Start-Sleep -Milliseconds 700
     Send-Keys 'c' | Out-Null
-    # 4. 等 转换结果 弹窗 (owner-drawn, 身份即接受) <=WaitCompileSeconds
+    # 4. 等编译结果 (<=WaitCompileSeconds). [OCR-3] KV STUDIO 12.42 实机 (2026-11-06):
+    #    编译结果 = 「转换结果」#32770 模态弹窗 (标题恰为 转换结果, 内含 转换成功。/转换失败。
+    #    文本 + OK/详细 按钮 + 容量表), 不是 dock 树. 弹窗出现且文本可判时以弹窗为主判据;
+    #    D 节 dock 右键复制保留为错误明细抓取 + 弹窗缺席时的兜底通道.
     $done = Wait-Uia '转换结果|转换成功|转换失败' ([double]$WaitCompileSeconds) $script:KvsPid
     if (-not $done) { Finish $EXIT_TIMEOUT ('编译结果 ' + $WaitCompileSeconds + 's 内未出现 (转换结果/outputTreeControl1 均不可证)'); return }
     $hint = @(Get-UiaNames $done | Where-Object { $_ -match '转换成功|转换失败|错误数量' }) -join ' '
-    # 关模态 (转换失败。/成功。按 {ENTER}, L3:287; 再扫确认按钮)
-    Send-Keys '{ENTER}' | Out-Null
+    # 弹窗主通道: 标题恰为 ^转换结果$ 的窗口 -> 抓 转换成功。/转换失败。 文本判成败
+    $dialogVerdict = ''; $dialogText = ''
+    $titleHit = Invoke-KvUia -Pattern '^转换结果$' -ProcessId $script:KvsPid
+    if (Test-UiaHit $titleHit) {
+        $bodyOut = Invoke-KvUia -Pattern '转换成功|转换失败' -ProcessId $script:KvsPid
+        $dialogText = (@(Get-UiaNames $bodyOut | Where-Object { $_ -match '转换成功|转换失败' }) | Sort-Object -Unique) -join ' / '
+        if ($dialogText -match '转换失败') { $dialogVerdict = 'NG' }
+        elseif ($dialogText -match '转换成功') { $dialogVerdict = 'OK' }
+        Write-Log ('convert-dialog verdict=' + $dialogVerdict + ' text=[' + $dialogText + ']')
+        $script:ImportDetail.dialogs.Add('convert-dialog [' + $dialogVerdict + ']')
+    }
+    # 关模态: OK 按钮 (Name ^OK$) 优先, 未命中按 {ENTER} (L3:287), 再扫确认按钮清扫
+    $okBtn = Invoke-KvUia -Pattern '^OK$' -ProcessId $script:KvsPid -InvokeUia
+    if (-not (Test-UiaActed $okBtn)) { Send-Keys '{ENTER}' | Out-Null }
     Start-Sleep -Milliseconds 600
     Dismiss-Dialogs 'convert-modal' 4
     # 5. 错误抓取唯一可靠路径: WM_CONTEXTMENU 结果树 + Name 恰为 复制(C) 的菜单项 Invoke + 剪贴板序列
@@ -578,15 +625,22 @@ function Invoke-CompileGate() {
         Send-Keys '{ESC}' | Out-Null   # 收掉残留上下文菜单
     }
     if ($raw -notmatch '^转换结果\s*(OK|NG)') {
-        # 兜底: 弹窗文本启发 (L4:152: 成功弹窗合成 转换结果 OK)
-        if ($hint -match '转换失败') { $raw = "转换结果 NG`r`n" + $hint }
+        # 兜底: 弹窗文本启发 (L4:152: 成功弹窗合成 转换结果 OK; [OCR-3] 优先用弹窗判据)
+        if ($dialogVerdict) { $raw = "转换结果 $dialogVerdict`r`n" + $(if ($dialogText) { $dialogText } else { $hint }) }
+        elseif ($hint -match '转换失败') { $raw = "转换结果 NG`r`n" + $hint }
         elseif ($hint -match '转换成功') { $raw = "转换结果 OK`r`n" + $hint }
         elseif ($raw) { }
-        else { Finish $EXIT_TIMEOUT '编译结果无法抓取 (复制(C) 菜单/剪贴板/弹窗启发均失败)'; return }
+        else { Finish $EXIT_TIMEOUT '编译结果无法抓取 (转换结果弹窗/复制(C) 菜单/剪贴板/弹窗启发均失败)'; return }
     }
     [System.IO.File]::WriteAllText((Join-Path $script:OutDirPath 'compile_result_copied.txt'), $raw, (New-Object System.Text.UTF8Encoding($false)))
     $script:Compile.rawText = $raw
     $parsed = Parse-CompileText $raw
+    # [OCR-3] 弹窗判据优先 (2026-11-06 实机): 转换结果弹窗给出结论时以其为准, dock 树复制
+    # 仅作错误明细补充 (可能陈旧/内容不一致); 弹窗缺席时维持原 D 节行为 (树复制判成败).
+    if ($dialogVerdict -and $parsed.state -ne $dialogVerdict) {
+        if ($parsed.state) { Add-Message ('compile 弹窗/树判据分歧: dialog=' + $dialogVerdict + ' tree=' + $parsed.state + ' -> 弹窗优先') }
+        $parsed = @{ state = $dialogVerdict; header = ('转换结果 ' + $dialogVerdict + ' [convert-result dialog]'); errorCount = $parsed.errorCount; warningCount = $parsed.warningCount; errors = $parsed.errors }
+    }
     $script:Compile.state = $parsed.state
     $script:Compile.rawHeader = $parsed.header
     $script:Compile.errorCount = $parsed.errorCount
@@ -697,8 +751,8 @@ try {
         $steps = @(
             ('[1 绑定] 按 CommandLine 绑定 Kvs.exe(含 {0}); 无则 Kvs.exe "{0}" 启动并等窗口<=90s; >1 同工程=歧义(exit3); 标题须含 {1}' -f $kprPath, $script:ProjectName),
             ('[2 导入] CapsLock ON -> %frr (兜底 UIA 文件>助记符列表>读取(R)...) -> 打开对话框(标题 打开/Open) 文件名 {0} (1148 SetValue 或 ^a ^v 回车) -> 覆盖/全部覆盖/插入 -> OK/确定/是/はい + 程序种类弹窗 + 不存在的指令 清扫 -> 树验证 /{1}/ ; FAIL=10' -f $script:MnmFull, $ModuleName),
-            ($(if ($varRows) { ('[3 变量] Alt+V,l 开 KvVariableForm -> 局部页 -> 模块下拉={0} -> %l + Shift+Tab x<=3 聚焦网格 -> Ctrl+Home -> 剪贴板 {1} 行 TSV 回车粘贴 -> 全部覆盖 -> Ctrl+A/Ctrl+C 回读验证 -> Ctrl+F4; FAIL=20' -f $ModuleName, $varRows.Count) } else { '[3 变量] SKIP (未给 -VariablesTsv)' })),
-            ('[4 编译] 关阻断弹窗 -> 聚焦 editor(拒模拟器) -> CapsLock ON -> %a + c (Ctrl+F9) -> 等 转换结果 <=' + $WaitCompileSeconds + 's -> WM_CONTEXTMENU + 复制(C) + 剪贴板序列号 -> 解析 errors[]; NG=30 超时=50'),
+            ($(if ($varRows) { ('[3 变量] Alt+V,l 开 KvVariableForm -> 局部页 -> 切换 选择程序(M) 下拉到 {0} (%m 聚焦+type-ahead+回车; UIA 展开兜底; 已是目标则跳过) -> %l + Shift+Tab x<=3 聚焦网格 -> Ctrl+Home -> 剪贴板 {1} 行 TSV 回车粘贴 -> 全部覆盖 -> Ctrl+A/Ctrl+C 回读验证 -> Ctrl+F4; FAIL=20' -f $ModuleName, $varRows.Count) } else { '[3 变量] SKIP (未给 -VariablesTsv)' })),
+            ('[4 编译] 关阻断弹窗 -> 聚焦 editor(拒模拟器) -> CapsLock ON -> %a + c (Ctrl+F9) -> 等 转换结果 <=' + $WaitCompileSeconds + 's -> [转换结果 弹窗判据 转换成功。/转换失败。 优先, OK 关闭] -> WM_CONTEXTMENU + 复制(C) + 剪贴板序列号 -> 解析 errors[]; NG=30 超时=50'),
             ('[5 落盘] Ctrl+S -> 等标题脏标记消失<=20s -> 指纹 before/after (All.prgx/*.kstx/*.mnm/WsTreeEnv.xml) SHA256; FAIL=40')
         )
         foreach ($s in $steps) { Write-Log ('DRY 步骤 ' + $s) }

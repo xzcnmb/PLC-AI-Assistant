@@ -283,12 +283,35 @@ public sealed class KeyenceDeployTests : IDisposable
         File.WriteAllText(script, "#fake");
         var kvs = CreateFakeKvs();
 
-        // Bare device designator in the body: generator warning, not a hard failure.
+        // Bare device designator used as a VALUE in the body: generator warning, not a
+        // hard failure. (Designators on the LEFT of ':=' are rejected outright by the
+        // MNM precheck; see KeyenceMnmGeneratorTests.)
         var report = await deploy.RunAsync(
-            MakeRequest(projectDir, CreateTempDir(), script, kvsExe: kvs, source: "DM100 := 5;"));
+            MakeRequest(projectDir, CreateTempDir(), script, kvsExe: kvs, source: "sw := DM100;"));
 
         Assert.Contains(report.Warnings, w => w.Contains("Bare device designator", StringComparison.Ordinal));
         Assert.Equal(1, runner.Calls);
+    }
+
+    [Fact]
+    public async Task MnmGate_BareDesignatorAssignmentTarget_FailsBeforeScript()
+    {
+        var runner = new FakeKvDeployRunner();
+        var deploy = new KeyenceDeployProgram(runner);
+        var projectDir = CreateTempDir();
+        File.WriteAllText(Path.Combine(projectDir, "test.kpr"), "stub");
+        var script = Path.Combine(CreateTempDir(), "s.ps1");
+        File.WriteAllText(script, "#fake");
+        var kvs = CreateFakeKvs();
+
+        // 'DM100 := ...' assigns a bare device address: KV-ST forbids it, so the MNM
+        // precheck must fail and the script must never be invoked (2026-11-06 finding).
+        var report = await deploy.RunAsync(
+            MakeRequest(projectDir, CreateTempDir(), script, kvsExe: kvs, source: "DM100 := 5;"));
+
+        Assert.Equal("FAIL", report.OutcomeOf("mnm"));
+        Assert.StartsWith("KV_DEPLOY_MNM_GENERATION_FAILED", report.FatalError);
+        Assert.Equal(0, runner.Calls);
     }
 
     // ---------------- Pure helpers ----------------

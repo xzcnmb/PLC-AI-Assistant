@@ -103,6 +103,12 @@ public static class KeyenceMnmGenerator
     private static readonly Regex DeviceDesignatorPattern = new(
         @"\b(?:DM|EM|SD|B|C|D|M|R|T|V|W|X|Y)\d+\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    // Assignment targets (identifier left of ':=') are the variable names KV STUDIO
+    // registers in the variable table; they may not collide with reserved words or be
+    // bare device designators. Captured from the comment/string-stripped body.
+    private static readonly Regex AssignmentTargetPattern = new(
+        @"\b([A-Za-z_][A-Za-z0-9_]*)\s*:=", RegexOptions.Compiled);
+
     // Header/area lines of the container itself must never appear in the source body.
     private static readonly string[] InjectionPrefixes = ["DEVICE:", "MODULE:", "MODULE_TYPE:"];
     private static readonly string[] InjectionExactLines = ["AREA_ST", "ENDH"];
@@ -115,9 +121,13 @@ public static class KeyenceMnmGenerator
     /// Builds the MNM container for one module. Validation order: module name shape,
     /// module name reserved-word/device-name collision, device code, executable
     /// content, declaration wrappers, container injection, control characters, module
-    /// name ':' check. The first failure is returned as Ok=false with Error set and an
-    /// empty payload; otherwise all applicable warnings are attached to an Ok=true
-    /// result (including bare device designators found in the statement body).
+    /// name ':' check, ST-body variable names (every ':=' assignment target colliding
+    /// with a reserved word or being a bare device designator fails the build; verified
+    /// on KV STUDIO 12.42 for 'out :='). The first failure is returned as Ok=false with
+    /// Error set and an empty payload; otherwise all applicable warnings are attached to
+    /// an Ok=true result (including bare device designators found in the statement body
+    /// and a count of missing ';' terminators auto-appended to assignment lines during
+    /// container build).
     /// </summary>
     public static KeyenceMnmResult Generate(string source, string moduleName, int deviceCode, bool functionBlock, bool utf16Le = true)
     {
@@ -214,6 +224,34 @@ public static class KeyenceMnmGenerator
                 "Module name must not contain ':'.");
         }
 
+        // 9. ST-body variable names: every assignment target (identifier left of ':=')
+        //    becomes a KV STUDIO variable-table entry. KV STUDIO is case-insensitive and
+        //    rejects names colliding with a reserved word at variable registration
+        //    ("与预约语重复"; 'out' verified rejected on KV STUDIO 12.42 in the
+        //    2026-11-06 live run - it failed the whole compile), so refuse them hard.
+        //    A bare device designator on the left of ':=' is likewise illegal: KV-ST
+        //    forbids direct device-address assignment outside variable bindings.
+        foreach (Match target in AssignmentTargetPattern.Matches(stripped))
+        {
+            string name = target.Groups[1].Value;
+            if (KvReservedWordSet.Contains(name))
+            {
+                return Fail(moduleName, moduleType, deviceCode, encodingName,
+                    $"ST variable name '{name}' (assignment target before ':=') collides with a KV reserved word " +
+                    "(matching is case-insensitive), e.g. 'out'/'b'; KV STUDIO rejects it at variable registration " +
+                    "(\"与预约语重复\" / reserved word duplicate) and the module then fails to compile. " +
+                    "Rename the variable ('sw'/'result' were verified safe on KV STUDIO 12.42).");
+            }
+
+            if (Regex.IsMatch(name, @"^(?:DM|EM|SD|B|C|D|M|R|T|V|W|X|Y)\d+$", RegexOptions.IgnoreCase))
+            {
+                return Fail(moduleName, moduleType, deviceCode, encodingName,
+                    $"ST variable name '{name}' (assignment target before ':=') is a bare KV device designator " +
+                    "(class letters + number, e.g. DM100/W0/B1); KV-ST does not allow assigning device " +
+                    "addresses directly - declare a variable bound to the device in the variable table instead.");
+            }
+        }
+
         var warnings = new List<string>();
         if (FbCallPattern.IsMatch(stripped))
         {
@@ -258,10 +296,23 @@ public static class KeyenceMnmGenerator
             $";MODULE_TYPE:{moduleType}",
             "AREA_ST"
         };
-        var bodyLines = GetLogicalLines(source);
+        // Statement-terminator normalization (KV STUDIO 12.42 live finding 2026-11-06):
+        // KV-ST requires ';' at the end of every executable statement, and AI/user-written
+        // ST bodies routinely omit it, which makes the whole 转换 (compile) fail. Fix the
+        // container body conservatively - see NormalizeStatementSemicolons. Comment/string
+        // blanking is position-preserving (including line breaks), so the stripped text
+        // splits into the same line count and indexes align one-to-one.
+        var rawBodyLines = GetLogicalLines(source);
+        var bodyLines = NormalizeStatementSemicolons(rawBodyLines, GetLogicalLines(stripped), out int semicolonsFixed);
         foreach (var bodyLine in bodyLines)
         {
             lines.Add(";" + bodyLine);
+        }
+        if (semicolonsFixed > 0)
+        {
+            warnings.Add($"Auto-appended missing ';' to {semicolonsFixed} assignment line(s): KV-ST requires every " +
+                         "executable statement to end with ';' (sources without the terminators fail the KV STUDIO " +
+                         "conversion); the container body was normalized, keep the source terminated as well.");
         }
 
         lines.Add("END");
@@ -294,6 +345,90 @@ public static class KeyenceMnmGenerator
         }
 
         return normalized.Split('\n');
+    }
+
+    // Lines starting with these openers are compound-statement headers, never terminated
+    // by ';' (e.g. 'FOR i := 1 TO 5 DO' contains ':=' but must not gain a terminator).
+    private static readonly Regex StatementOpenerPattern = new(
+        @"^(FOR|IF|WHILE|REPEAT|CASE|ELSIF|ELSE|END_IF|END_FOR|END_WHILE|END_REPEAT|END_CASE|RETURN|EXIT|GOTO)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Trailing words that mean the expression continues on the next line (multi-line
+    // assignment); appending ';' to such a line would break the statement.
+    private static readonly string[] ContinuationWords =
+        ["AND", "OR", "XOR", "MOD", "TO", "BY", "DO", "OF", "THEN", "ELSE", "UNTIL", "NOT"];
+
+    /// <summary>
+    /// Conservative statement-terminator normalization of the container body lines.
+    /// A ';' is appended only when all of the following hold for the line (comments and
+    /// string literals blanked, so terminators are never inferred from commented-out or
+    /// quoted text): the line contains ':=' (an assignment), does not already end with
+    /// ';', is not a compound-statement header (IF/FOR/...), and ends like a complete
+    /// statement (letter/digit/'_'/')' and not a continuation operator word). Block
+    /// keywords and every other line shape are left byte-identical. The ';' is inserted
+    /// before any trailing line comment so it stays outside the comment.
+    /// </summary>
+    private static string[] NormalizeStatementSemicolons(string[] bodyLines, string[] strippedLines, out int fixedCount)
+    {
+        fixedCount = 0;
+        var result = new string[bodyLines.Length];
+        for (int i = 0; i < bodyLines.Length; i++)
+        {
+            string line = bodyLines[i];
+            string strippedLine = i < strippedLines.Length ? strippedLines[i] : line;
+            string trimmed = strippedLine.Trim();
+            if (trimmed.Length > 0
+                && trimmed.Contains(":=", StringComparison.Ordinal)
+                && !trimmed.EndsWith(';')
+                && !StatementOpenerPattern.IsMatch(trimmed)
+                && EndsLikeCompleteStatement(trimmed))
+            {
+                line = line.Insert(SemicolonInsertionIndex(line, strippedLine), ";");
+                fixedCount++;
+            }
+
+            result[i] = line;
+        }
+
+        return result;
+    }
+
+    private static bool EndsLikeCompleteStatement(string trimmed)
+    {
+        char last = trimmed[trimmed.Length - 1];
+        if (!(char.IsLetterOrDigit(last) || last == '_' || last == ')'))
+        {
+            return false;
+        }
+
+        if (char.IsLetter(last) || last == '_')
+        {
+            int start = trimmed.Length;
+            while (start > 0 && (char.IsLetterOrDigit(trimmed[start - 1]) || trimmed[start - 1] == '_'))
+            {
+                start--;
+            }
+
+            string word = trimmed[start..];
+            return !ContinuationWords.Any(w => string.Equals(w, word, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return true;
+    }
+
+    // StripCommentsAndStrings preserves every character position (comments and quoted
+    // values become spaces), so the last non-blank character of the stripped line is the
+    // last real code character of the original line. The ';' goes right after it, which
+    // keeps it outside trailing comments and after leading ones.
+    private static int SemicolonInsertionIndex(string line, string strippedLine)
+    {
+        int k = strippedLine.Length - 1;
+        while (k >= 0 && char.IsWhiteSpace(strippedLine[k]))
+        {
+            k--;
+        }
+
+        return Math.Min(k + 1, line.Length);
     }
 
     private static KeyenceMnmResult Fail(string moduleName, int moduleType, int deviceCode, string encodingName, string error)
