@@ -18,11 +18,16 @@ Console.CancelKeyPress += (_, e) =>
 const string usage = "Usage: PlcMcp.Server [--config <readonly-targets.json>] [--smart-project-root <absolute-directory>] " +
     "[--autoshop-bridge] [--autoshop-bridge-path <register-path>] [--autoshop-compile-rva <hex>] " +
     "[--autoshop-allow-physical-write] [--autoshop-allow-physical-download] " +
+    "[--keyence-deploy [--keyence-kvs-exe <path>] [--keyence-kv-uia <path>] [--keyence-script <path>]] " +
     "[--codesys-exe <path> --codesys-profile <name> --codesys-version <version> --codesys-script <path> --codesys-script-sha256 <sha256> --codesys-project-root <absolute-directory>] " +
     "[--gxworks3-probe <path> --gxworks3-probe-sha256 <sha256> --gxworks3-exe <path> --gxworks3-version <version>]";
 
 string? configPath = null;
 string? smartProjectRoot = null;
+bool keyenceDeploy = false;
+string? keyenceKvsExe = null;
+string? keyenceKvUia = null;
+string? keyenceDeployScript = null;
 bool autoShopBridge = false;
 string? autoShopBridgePath = null;
 string? autoShopCompileRva = null;
@@ -49,6 +54,19 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--smart-project-root":
             if (smartProjectRoot is not null || (smartProjectRoot = ReadValue()) is null) { Console.Error.WriteLine(usage); return 2; }
+            break;
+        case "--keyence-deploy":
+            if (keyenceDeploy) { Console.Error.WriteLine("Each option can be supplied only once."); return 2; }
+            keyenceDeploy = true;
+            break;
+        case "--keyence-kvs-exe":
+            if (keyenceKvsExe is not null || (keyenceKvsExe = ReadValue()) is null) { Console.Error.WriteLine(usage); return 2; }
+            break;
+        case "--keyence-kv-uia":
+            if (keyenceKvUia is not null || (keyenceKvUia = ReadValue()) is null) { Console.Error.WriteLine(usage); return 2; }
+            break;
+        case "--keyence-script":
+            if (keyenceDeployScript is not null || (keyenceDeployScript = ReadValue()) is null) { Console.Error.WriteLine(usage); return 2; }
             break;
         case "--autoshop-bridge":
             if (autoShopBridge) { Console.Error.WriteLine("Each option can be supplied only once."); return 2; }
@@ -152,6 +170,22 @@ if (gxworks3Values.Count > 0)
     };
 }
 
+PlcMcp.Engineering.Workers.Keyence.KeyenceDeployOptions? keyenceDeployOptions = null;
+if (keyenceDeploy)
+{
+    keyenceDeployOptions = new PlcMcp.Engineering.Workers.Keyence.KeyenceDeployOptions
+    {
+        KvsExe = string.IsNullOrWhiteSpace(keyenceKvsExe) ? null : keyenceKvsExe,
+        KvUia = string.IsNullOrWhiteSpace(keyenceKvUia) ? null : keyenceKvUia,
+        ScriptPath = string.IsNullOrWhiteSpace(keyenceDeployScript) ? null : keyenceDeployScript
+    };
+}
+else if (keyenceKvsExe is not null || keyenceKvUia is not null || keyenceDeployScript is not null)
+{
+    Console.Error.WriteLine("--keyence-kvs-exe/--keyence-kv-uia/--keyence-script require --keyence-deploy.");
+    return 2;
+}
+
 AutoShopBridgeConfig? autoShopBridgeConfig = null;
 AutoShopInjectToolsOptions? autoShopInjectOptions = null;
 if (autoShopBridge)
@@ -183,7 +217,8 @@ try
         gxworks3Config,
         autoShopInjectOptions: autoShopInjectOptions,
         allowPhysicalWrite: autoShopAllowPhysicalWrite,
-        allowPhysicalDownload: autoShopAllowPhysicalDownload);
+        allowPhysicalDownload: autoShopAllowPhysicalDownload,
+        keyenceDeployOptions: keyenceDeployOptions);
 }
 catch (Exception ex)
 {

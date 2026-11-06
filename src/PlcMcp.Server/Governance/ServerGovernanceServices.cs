@@ -66,6 +66,18 @@ public sealed class ServerGovernanceServices
     public AutoShopWriteRegisterService? AutoShopWriteRegister { get; }
 
     /// <summary>
+    /// Gated KEYENCE KV STUDIO deploy services (ST source -> MNM -> PowerShell script ->
+    /// five-gate report via scripts/kv_studio_deploy.ps1); non-null only when explicitly
+    /// enabled with --keyence-deploy. When null, plc_keyence_deploy_program is not
+    /// registered at all (conditional registration, never silent). The pipeline drives a
+    /// local KV STUDIO IDE over the deployment script contract; it never contacts a PLC.
+    /// </summary>
+    public KeyenceDeployProgram? KeyenceDeploy { get; }
+
+    /// <summary>Server-level KV deploy defaults resolved from --keyence-deploy options.</summary>
+    public PlcMcp.Engineering.Workers.Keyence.KeyenceDeployOptions? KeyenceDeployOptions { get; }
+
+    /// <summary>
     /// Operator switch for physical writes (default OFF): when false, only
     /// simulation targets on loopback hosts are writable by
     /// <see cref="AutoShopWriteRegister"/>; when true, physical targets may be
@@ -97,7 +109,9 @@ public sealed class ServerGovernanceServices
         IAutoShopSimulatorProcessDriver? autoShopSimulatorDriver = null,
         AutoShopInjectToolsOptions? autoShopInjectOptions = null,
         bool allowPhysicalWrite = false,
-        bool allowPhysicalDownload = false)
+        bool allowPhysicalDownload = false,
+        PlcMcp.Engineering.Workers.Keyence.KeyenceDeployOptions? keyenceDeployOptions = null,
+        IKvDeployRunner? kvDeployRunner = null)
     {
         var root = Path.GetFullPath(dataRoot);
         DataRoot = root;
@@ -165,6 +179,27 @@ if (codesysConfig is not null)
             AllowPhysicalWrite = allowPhysicalWrite;
             AllowPhysicalDownload = allowPhysicalDownload;
         }
+
+        if (keyenceDeployOptions is not null)
+        {
+            // Opt-in validation only; absence of Kvs.exe is reported per tool call (doctor-lite),
+            // so enabling the switch on a machine without KV STUDIO never crashes the server.
+            foreach (var (name, value) in new[]
+                     {
+                         ("--keyence-kvs-exe", keyenceDeployOptions.KvsExe),
+                         ("--keyence-kv-uia", keyenceDeployOptions.KvUia),
+                         ("kv deploy script path", keyenceDeployOptions.ScriptPath)
+                     })
+            {
+                if (!string.IsNullOrWhiteSpace(value) && !Path.IsPathRooted(value))
+                {
+                    throw new ArgumentException($"{name} must be an absolute path: '{value}'");
+                }
+            }
+
+            KeyenceDeployOptions = keyenceDeployOptions;
+            KeyenceDeploy = new KeyenceDeployProgram(kvDeployRunner);
+        }
     }
 
     public async Task<CapabilityReport> GetCapabilityReportAsync(TargetProfile target, CancellationToken cancellationToken = default)
@@ -221,6 +256,11 @@ if (codesysConfig is not null)
             "autoshop_inject_bridge_axis_config", autoShopReady ? CapabilityStatus.Experimental : CapabilityStatus.Unsupported,
             autoShopReady ? "plc_autoshop_axis_config reads/edits the xml\\axis.xml member of a .hcpp package (F2 pipeline, offline round-trip verified) and can re-open the project; structure-level only - the axis schema is reverse-engineered and vendor consumption of edited values is unverified."
                 : "AutoShop bridge not enabled; pass --autoshop-bridge to opt in."));
+        var keyenceDeployReady = KeyenceDeploy is not null && target.Vendor == PlcVendor.Keyence;
+        capabilities.Add(new CapabilityDescriptor(
+            "keyence_st_deploy", keyenceDeployReady ? CapabilityStatus.Experimental : CapabilityStatus.Unsupported,
+            keyenceDeployReady ? "plc_keyence_deploy_program chains ST -> MNM generation with the gated PowerShell deployment script (KV STUDIO import/variable registration/compile/save, five-gate report). Local IDE automation only, never a PLC connection; offline contract tests only - live KV STUDIO behaviour is unverified on this host unless separately calibrated."
+                : "KV deploy not enabled; pass --keyence-deploy to opt in. An installed KV STUDIO alone never proves license, project compatibility or deployment support."));
         capabilities.Add(new CapabilityDescriptor(
             "autoshop_write_register", CapabilityStatus.Experimental,
             autoShopReady ? "plc_autoshop_write_register writes FC5/FC6 Modbus TCP frames to a configured Inovance target with readback; by default ONLY simulation targets on 127.0.0.0/8 hosts are writable (local H5U simulator); physical targets require --autoshop-allow-physical-write (default OFF) plus operator approval. Mapping table is an unverified documentation default."
