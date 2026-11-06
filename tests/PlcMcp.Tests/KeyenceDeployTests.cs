@@ -156,10 +156,10 @@ public sealed class KeyenceDeployTests : IDisposable
         var sb = new StringBuilder("{");
         if (scriptVersion is not null)
         {
-            sb.Append("\"scriptVersion\":").Append(scriptVersion).Append(',');
+            sb.Append("\"scriptVersion\:").Append(scriptVersion).Append(',');
         }
 
-        sb.Append("\"projectDir\":\"C:\\\\\\\\proj\\\\\\\\qa\",\"moduleName\":\"MotorCtl\",\"dryRun\":")
+        sb.Append("\"projectDir\":\"C:\\\\proj\\\\qa\",\"moduleName\":\"MotorCtl\",\"dryRun\":")
           .Append(dryRun ? "true" : "false").Append(',');
 
         if (!omitGates)
@@ -173,18 +173,18 @@ public sealed class KeyenceDeployTests : IDisposable
         if (!omitCompile)
         {
             sb.Append("\"compile\":{\"state\":\"").Append(state)
-              .Append("\",\"errorCount\":").Append(errorCount)
-              .Append(",\"warningCount\":").Append(warningCount)
+              .Append("\",\"errorCount\:").Append(errorCount)
+              .Append(",\"warningCount\:").Append(warningCount)
               .Append(",\"rawHeader\":\"").Append(rawHeader)
-              .Append("\",\"errors\":").Append(errors)
+              .Append("\",\"errors\:").Append(errors)
               .Append(",\"rawText\":\"").Append(rawText).Append("\"},");
         }
 
-        sb.Append("\"importDetail\":{\"moduleFoundInTree\":").Append(moduleFound ? "true" : "false")
+        sb.Append("\"importDetail\":{\"moduleFoundInTree\"").Append(moduleFound ? "true" : "false")
           .Append(",\"dialogs\":[\"覆盖|插入?\"]},")
-          .Append("\"persist\":{\"fingerprintBefore\":\"beforehash\",\"fingerprintAfter\":\"afterhash\",\"changed\":")
+          .Append("\"persist\":{\"fingerprintBefore\":\"beforehash\",\"fingerprintAfter\":\"afterhash\",\"changed\:")
           .Append(changed ? "true" : "false").Append("},")
-          .Append("\"messages\":").Append(messages).Append('}');
+          .Append("\"messages\:").Append(messages).Append('}');
         return sb.ToString();
     }
 
