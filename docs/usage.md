@@ -216,7 +216,6 @@ AutoShop（V4.12.0.2）集成所用接口为**逆向所得、无厂商背书、�
 | 经 AutoShop 的元件写 / 强制 | `Unsupported` | 厂商以太网写导出为桩（0xF390，F1 实证）、Force 实弹崩宿主（不可捕获）；本版不注册经 AutoShop 的写/强制工具，桥三层门默认关；模拟器元件写走 Modbus TCP 502（见 write_register 行），程序下载/运行走 D1 12939 协议层（见 download/run_stop 行） |
 | 真机 PLC 下载 / 真机 CPU RUN-STOP / 真机元件写 | `Unsupported` | 一切实验仅 127.0.0.1：D1 协议客户端与 Modbus 写服务均硬拒非回环目标（物理开关默认关且打开后深层红线仍拒）；真机下载状态机、装载链、CPU RUN/STOP 通道与映射表均未验证 |
 | 插件框架 / 原生通信栈直调 | `Unsupported` | 仅归档情报/证据；布局与版本强绑定，本版无 MCP 工具 |
-| 环境检测 / 模拟器发现 | `Experimental` | 仅本机文件系统/注册表/TCP/进程证据；无厂商背书 |
 
 ## 12. 基恩士运行时（Keyence runtime）
 
